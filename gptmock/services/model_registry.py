@@ -62,7 +62,7 @@ def get_instructions_for_model(model: str, base_instructions: str, gpt5_codex_in
 
 def get_model_list(
     expose_reasoning: bool = False,
-) -> List[Dict[str, Any]]:
+) -> List[str]:
     """Return unified model list for both OpenAI and Ollama formats."""
     model_groups = [
         ("gpt-5", ["high", "medium", "low", "minimal"]),

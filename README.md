@@ -254,7 +254,7 @@ Each option can also be set via environment variable. Precedence: **CLI flag > `
 | `--debug-model` | `GPTMOCK_DEBUG_MODEL` | — | Force all requests to use this model name |
 | `--reasoning-effort` | `GPTMOCK_REASONING_EFFORT` | `medium` | `minimal` / `low` / `medium` / `high` / `xhigh` |
 | `--reasoning-summary` | `GPTMOCK_REASONING_SUMMARY` | `auto` | `auto` / `concise` / `detailed` / `none` |
-| `--reasoning-compat` | `GPTMOCK_REASONING_COMPAT` | `think-tags` | How reasoning is exposed: `think-tags` / `o3` / `legacy` |
+| `--reasoning-compat` | `GPTMOCK_REASONING_COMPAT` | `think-tags` | How reasoning is exposed: `think-tags` / `o3` / `legacy` (`current` is accepted as an alias for `legacy`) |
 | `--expose-reasoning-models` | `GPTMOCK_EXPOSE_REASONING_MODELS` | off | Show effort variants as separate models in `/v1/models` |
 | `--enable-web-search` | `GPTMOCK_DEFAULT_WEB_SEARCH` | off | Enable web search by default when `responses_tools` is omitted |
 
