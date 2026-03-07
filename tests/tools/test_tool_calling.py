@@ -11,7 +11,7 @@ Usage:
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List
+from typing import Any
 
 import pytest
 from starlette.testclient import TestClient
@@ -23,7 +23,7 @@ from gptmock.services.model_registry import get_model_list
 # Fixtures
 # ---------------------------------------------------------------------------
 
-ALL_MODELS: List[str] = get_model_list(expose_reasoning=False)
+ALL_MODELS: list[str] = get_model_list(expose_reasoning=False)
 TIMEOUT = 120
 
 
@@ -40,7 +40,7 @@ def client() -> TestClient:
 # ---------------------------------------------------------------------------
 
 
-def _payload_function_tool(model: str) -> Dict[str, Any]:
+def _payload_function_tool(model: str) -> dict[str, Any]:
     """Single function tool (calculator)."""
     return {
         "model": model,
@@ -74,7 +74,7 @@ def _payload_function_tool(model: str) -> Dict[str, Any]:
     }
 
 
-def _payload_web_search(model: str) -> Dict[str, Any]:
+def _payload_web_search(model: str) -> dict[str, Any]:
     """Responses-style web_search tool."""
     return {
         "model": model,
@@ -89,7 +89,7 @@ def _payload_web_search(model: str) -> Dict[str, Any]:
     }
 
 
-def _payload_parallel(model: str) -> Dict[str, Any]:
+def _payload_parallel(model: str) -> dict[str, Any]:
     """Parallel function tool calls."""
     return {
         "model": model,
@@ -143,7 +143,7 @@ def _payload_parallel(model: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _assert_valid_response(resp, model: str, label: str) -> Dict[str, Any]:
+def _assert_valid_response(resp, model: str, label: str) -> dict[str, Any]:
     """Common assertions for any chat completion response."""
     assert resp.status_code == 200, (
         f"[{model}][{label}] status={resp.status_code} body={resp.text[:500]}"
@@ -155,16 +155,16 @@ def _assert_valid_response(resp, model: str, label: str) -> Dict[str, Any]:
     return data
 
 
-def _get_message(data: Dict[str, Any]) -> Dict[str, Any]:
+def _get_message(data: dict[str, Any]) -> dict[str, Any]:
     return data["choices"][0].get("message", {})
 
 
-def _get_tool_calls(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _get_tool_calls(data: dict[str, Any]) -> list[dict[str, Any]]:
     msg = _get_message(data)
     return msg.get("tool_calls") or []
 
 
-def _get_finish_reason(data: Dict[str, Any]) -> str:
+def _get_finish_reason(data: dict[str, Any]) -> str:
     return data["choices"][0].get("finish_reason", "")
 
 

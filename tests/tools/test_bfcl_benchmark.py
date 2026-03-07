@@ -19,7 +19,7 @@ Usage:
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import pytest
 from starlette.testclient import TestClient
@@ -30,7 +30,7 @@ from gptmock.services.model_registry import get_model_list
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-ALL_MODELS: List[str] = get_model_list(expose_reasoning=False)
+ALL_MODELS: list[str] = get_model_list(expose_reasoning=False)
 TIMEOUT = 120
 
 
@@ -659,8 +659,8 @@ class S:
         cat: str,
         prompt: str,
         tools: list,
-        expect_fns: Optional[list] = None,
-        required_args: Optional[dict] = None,
+        expect_fns: list | None = None,
+        required_args: dict | None = None,
         min_calls: int = 1,
         parallel: bool = False,
         notes: str = "",
@@ -1749,9 +1749,9 @@ SCENARIO_IDS = [s.id for s in ALL_SCENARIOS]
 # ═══════════════════════════════════════════════════════════════════════════
 
 
-def _build_payload(model: str, scenario: S) -> Dict[str, Any]:
+def _build_payload(model: str, scenario: S) -> dict[str, Any]:
     """Build chat completion payload from a scenario."""
-    payload: Dict[str, Any] = {
+    payload: dict[str, Any] = {
         "model": model,
         "messages": [{"role": "user", "content": scenario.prompt}],
         "tools": scenario.tools,
@@ -1766,7 +1766,7 @@ def _build_payload(model: str, scenario: S) -> Dict[str, Any]:
     return payload
 
 
-def _parse_response(resp) -> Dict[str, Any]:
+def _parse_response(resp) -> dict[str, Any]:
     """Parse and validate the HTTP response."""
     assert resp.status_code == 200, f"HTTP {resp.status_code}: {resp.text[:500]}"
     data = resp.json()
@@ -1774,14 +1774,14 @@ def _parse_response(resp) -> Dict[str, Any]:
     return data
 
 
-def _get_tool_calls(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _get_tool_calls(data: dict[str, Any]) -> list[dict[str, Any]]:
     msg = data["choices"][0].get("message", {})
     return msg.get("tool_calls") or []
 
 
 def _validate_tool_call(
-    tc: Dict[str, Any], scenario_id: str, model: str
-) -> Dict[str, Any]:
+    tc: dict[str, Any], scenario_id: str, model: str
+) -> dict[str, Any]:
     """Validate tool_call structure and return parsed args."""
     assert isinstance(tc.get("id"), str) and tc["id"], (
         f"[{model}][{scenario_id}] missing tool_call id"

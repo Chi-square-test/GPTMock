@@ -9,7 +9,7 @@ Usage:
 
 from __future__ import annotations
 
-from typing import Generator, List
+from collections.abc import Generator
 
 import pytest
 from starlette.testclient import TestClient
@@ -21,16 +21,16 @@ TEST_PROMPT = "Say 'hello' and nothing else."
 TIMEOUT = 120
 
 
-def _get_all_models() -> List[str]:
+def _get_all_models() -> list[str]:
     """Return all base model IDs from the registry (computed once at import time)."""
     return get_model_list(expose_reasoning=False)
 
 
-ALL_MODELS: List[str] = _get_all_models()
+ALL_MODELS: list[str] = _get_all_models()
 
 
 @pytest.fixture(scope="session")
-def client() -> Generator[TestClient, None, None]:
+def client() -> Generator[TestClient]:
     """In-process TestClient — no external server required."""
     app = create_app()
     with TestClient(app, raise_server_exceptions=False) as c:
@@ -38,6 +38,6 @@ def client() -> Generator[TestClient, None, None]:
 
 
 @pytest.fixture(scope="session")
-def all_models() -> List[str]:
+def all_models() -> list[str]:
     """Session-scoped fixture providing the model list."""
     return ALL_MODELS

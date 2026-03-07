@@ -5,6 +5,7 @@ Non-streaming request to make observation simpler.
 """
 
 import json
+
 import requests
 
 URL = "http://127.0.0.1:8000/v1/chat/completions"

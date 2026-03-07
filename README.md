@@ -1,6 +1,7 @@
 # GPTMock
 
 [![Tests](https://github.com/rapidrabbit76/GPTMock/actions/workflows/tests.yml/badge.svg)](https://github.com/rapidrabbit76/GPTMock/actions/workflows/tests.yml)
+[![Integration Tests](https://img.shields.io/badge/integration%20tests-local%201645%20passed-brightgreen)](https://github.com/rapidrabbit76/GPTMock)
 [![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/rapidrabbit76/255a945245d92c731d002ee3be93a74c/raw/gptmock-coverage.json)](https://github.com/rapidrabbit76/GPTMock/actions/workflows/tests.yml)
 [![Python 3.13+](https://img.shields.io/badge/python-3.13%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -9,6 +10,8 @@
 > The original Flask + synchronous `requests` stack has been replaced with **FastAPI + async `httpx`**, a layered architecture (router / service / infra), `pydantic-settings` configuration, and `uv` as the build system.
 
 **OpenAI & Ollama compatible API powered by your ChatGPT account.**
+
+Integration badge currently shows the latest local authenticated snapshot (`1645 passed`). To publish a dynamic badge later, run `uv run python scripts/update_test_badge.py` with `GIST_TOKEN`.
 
 gptmock runs a local server that proxies requests to the ChatGPT Codex backend, exposing an OpenAI/Ollama compatible API. Use GPT-5, GPT-5-Codex, and other models directly from your ChatGPT Plus/Pro subscription — no API key required.
 

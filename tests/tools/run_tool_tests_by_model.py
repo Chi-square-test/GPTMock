@@ -15,10 +15,9 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from typing import Callable, Dict, List
+from collections.abc import Callable
 
 import requests
-
 
 URL = "http://127.0.0.1:8000/v1/chat/completions"
 TIMEOUT_SECONDS_DEFAULT = 90
@@ -42,7 +41,7 @@ ALL_MODELS = [
 # ---------------------------------------------------------------------------
 
 
-def build_case_web_search(model: str) -> Dict:
+def build_case_web_search(model: str) -> dict:
     """responses_tools 경로: web_search (Responses API native tool)."""
     return {
         "model": model,
@@ -57,7 +56,7 @@ def build_case_web_search(model: str) -> Dict:
     }
 
 
-def build_case_calculator(model: str) -> Dict:
+def build_case_calculator(model: str) -> dict:
     """tools[] 경로: function tool (OpenAI Chat Completions 호환)."""
     return {
         "model": model,
@@ -91,7 +90,7 @@ def build_case_calculator(model: str) -> Dict:
     }
 
 
-def build_case_parallel(model: str) -> Dict:
+def build_case_parallel(model: str) -> dict:
     """parallel_tool_calls=True 로 여러 function tool 동시 호출 유도."""
     return {
         "model": model,
@@ -140,7 +139,7 @@ def build_case_parallel(model: str) -> Dict:
     }
 
 
-TEST_CASES: Dict[str, Callable[[str], Dict]] = {
+TEST_CASES: dict[str, Callable[[str], dict]] = {
     "web_search": build_case_web_search,
     "calculator": build_case_calculator,
     "parallel": build_case_parallel,
@@ -181,7 +180,7 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _csv(value: str) -> List[str]:
+def _csv(value: str) -> list[str]:
     if not value or not isinstance(value, str):
         return []
     return [v.strip() for v in value.split(",") if v.strip()]
@@ -192,7 +191,7 @@ def _csv(value: str) -> List[str]:
 # ---------------------------------------------------------------------------
 
 
-def send(payload: Dict, url: str, timeout: int) -> Dict:
+def send(payload: dict, url: str, timeout: int) -> dict:
     t0 = time.monotonic()
     try:
         resp = requests.post(url, json=payload, timeout=timeout)
@@ -219,7 +218,7 @@ def send(payload: Dict, url: str, timeout: int) -> Dict:
     }
 
 
-def summarize(body: Dict) -> str:
+def summarize(body: dict) -> str:
     """한 줄 요약: tool_calls 개수, finish_reason, 에러 메시지."""
     if not isinstance(body, dict):
         return "(non-dict body)"
@@ -290,7 +289,7 @@ def main() -> None:
     print(f"Timeout:   {args.timeout}s")
     print()
 
-    results: List[Dict] = []
+    results: list[dict] = []
     total = 0
     failed = 0
 

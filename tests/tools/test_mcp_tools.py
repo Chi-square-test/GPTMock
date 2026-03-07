@@ -12,7 +12,8 @@ Usage:
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Generator, List
+from collections.abc import Generator
+from typing import Any
 
 import pytest
 from starlette.testclient import TestClient
@@ -24,12 +25,12 @@ from gptmock.services.model_registry import get_model_list
 # Fixtures
 # ---------------------------------------------------------------------------
 
-ALL_MODELS: List[str] = get_model_list(expose_reasoning=False)
+ALL_MODELS: list[str] = get_model_list(expose_reasoning=False)
 TIMEOUT = 120
 
 
 @pytest.fixture(scope="module")
-def client() -> Generator[TestClient, None, None]:
+def client() -> Generator[TestClient]:
     app = create_app()
     with TestClient(app, raise_server_exceptions=False) as c:
         yield c
@@ -332,7 +333,7 @@ TOOL_MEMORY_CREATE_RELATIONS = {
 # ---------------------------------------------------------------------------
 
 
-def _payload(model: str, prompt: str, tools: list, **extra) -> Dict[str, Any]:
+def _payload(model: str, prompt: str, tools: list, **extra) -> dict[str, Any]:
     p = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -344,7 +345,7 @@ def _payload(model: str, prompt: str, tools: list, **extra) -> Dict[str, Any]:
     return p
 
 
-def payload_filesystem_read(model: str) -> Dict[str, Any]:
+def payload_filesystem_read(model: str) -> dict[str, Any]:
     return _payload(
         model,
         "Read the contents of /etc/hostname and tell me what it says.",
@@ -352,7 +353,7 @@ def payload_filesystem_read(model: str) -> Dict[str, Any]:
     )
 
 
-def payload_brave_search(model: str) -> Dict[str, Any]:
+def payload_brave_search(model: str) -> dict[str, Any]:
     return _payload(
         model,
         "Search for the latest Python 3.13 release notes.",
@@ -360,7 +361,7 @@ def payload_brave_search(model: str) -> Dict[str, Any]:
     )
 
 
-def payload_github_create_issue(model: str) -> Dict[str, Any]:
+def payload_github_create_issue(model: str) -> dict[str, Any]:
     return _payload(
         model,
         "Create a GitHub issue in owner=octocat repo=Hello-World titled 'Fix login bug' "
@@ -369,7 +370,7 @@ def payload_github_create_issue(model: str) -> Dict[str, Any]:
     )
 
 
-def payload_slack_send(model: str) -> Dict[str, Any]:
+def payload_slack_send(model: str) -> dict[str, Any]:
     return _payload(
         model,
         "Send a message to Slack channel C0123456789 saying 'Deploy complete for v2.1.0'.",
@@ -377,7 +378,7 @@ def payload_slack_send(model: str) -> Dict[str, Any]:
     )
 
 
-def payload_postgres_query(model: str) -> Dict[str, Any]:
+def payload_postgres_query(model: str) -> dict[str, Any]:
     return _payload(
         model,
         "Query the database: find all users where status is 'active' and created after 2025-01-01.",
@@ -385,7 +386,7 @@ def payload_postgres_query(model: str) -> Dict[str, Any]:
     )
 
 
-def payload_filesystem_parallel(model: str) -> Dict[str, Any]:
+def payload_filesystem_parallel(model: str) -> dict[str, Any]:
     return _payload(
         model,
         "Read the file /tmp/config.yaml and also write 'hello world' to /tmp/output.txt.",
@@ -394,7 +395,7 @@ def payload_filesystem_parallel(model: str) -> Dict[str, Any]:
     )
 
 
-def payload_sequential_thinking(model: str) -> Dict[str, Any]:
+def payload_sequential_thinking(model: str) -> dict[str, Any]:
     return _payload(
         model,
         "Use sequential thinking to figure out: what is the most efficient sorting algorithm "
@@ -403,7 +404,7 @@ def payload_sequential_thinking(model: str) -> Dict[str, Any]:
     )
 
 
-def payload_memory_graph(model: str) -> Dict[str, Any]:
+def payload_memory_graph(model: str) -> dict[str, Any]:
     return _payload(
         model,
         "Create knowledge graph entities for: 'Alice' is a 'person' who 'works at Acme Corp' "
@@ -419,7 +420,7 @@ def payload_memory_graph(model: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _assert_ok(resp, model: str, label: str) -> Dict[str, Any]:
+def _assert_ok(resp, model: str, label: str) -> dict[str, Any]:
     assert resp.status_code == 200, (
         f"[{model}][{label}] status={resp.status_code} body={resp.text[:500]}"
     )
@@ -430,14 +431,14 @@ def _assert_ok(resp, model: str, label: str) -> Dict[str, Any]:
     return data
 
 
-def _get_tool_calls(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _get_tool_calls(data: dict[str, Any]) -> list[dict[str, Any]]:
     msg = data["choices"][0].get("message", {})
     return msg.get("tool_calls") or []
 
 
 def _assert_tool_call_structure(
-    tc: Dict[str, Any], model: str, label: str
-) -> Dict[str, Any]:
+    tc: dict[str, Any], model: str, label: str
+) -> dict[str, Any]:
     """Validate a single tool_call and return parsed arguments."""
     assert isinstance(tc.get("id"), str) and tc["id"], (
         f"[{model}][{label}] tool_call missing id"
@@ -795,7 +796,7 @@ TOOL_PG_COMPLEX_QUERY = {
 }
 
 
-def payload_sql_multi_query(model: str) -> Dict[str, Any]:
+def payload_sql_multi_query(model: str) -> dict[str, Any]:
     """Parallel SELECT + INSERT."""
     return _payload(
         model,
@@ -806,7 +807,7 @@ def payload_sql_multi_query(model: str) -> Dict[str, Any]:
     )
 
 
-def payload_sql_describe_then_query(model: str) -> Dict[str, Any]:
+def payload_sql_describe_then_query(model: str) -> dict[str, Any]:
     """Describe table schema."""
     return _payload(
         model,
@@ -815,7 +816,7 @@ def payload_sql_describe_then_query(model: str) -> Dict[str, Any]:
     )
 
 
-def payload_sql_complex_join(model: str) -> Dict[str, Any]:
+def payload_sql_complex_join(model: str) -> dict[str, Any]:
     """Complex SQL with JOIN and aggregation — single tool to force direct query."""
     return _payload(
         model,
@@ -993,7 +994,7 @@ TOOL_PW_WAIT = {
 }
 
 
-def payload_pw_navigate_and_screenshot(model: str) -> Dict[str, Any]:
+def payload_pw_navigate_and_screenshot(model: str) -> dict[str, Any]:
     """Navigate to URL then take screenshot — 2-step browser automation."""
     return _payload(
         model,
@@ -1003,7 +1004,7 @@ def payload_pw_navigate_and_screenshot(model: str) -> Dict[str, Any]:
     )
 
 
-def payload_pw_form_fill(model: str) -> Dict[str, Any]:
+def payload_pw_form_fill(model: str) -> dict[str, Any]:
     """Login form: navigate + type username + type password + click submit."""
     return _payload(
         model,
@@ -1014,7 +1015,7 @@ def payload_pw_form_fill(model: str) -> Dict[str, Any]:
     )
 
 
-def payload_pw_scrape(model: str) -> Dict[str, Any]:
+def payload_pw_scrape(model: str) -> dict[str, Any]:
     """Navigate + evaluate JS to extract data + screenshot."""
     return _payload(
         model,
@@ -1025,7 +1026,7 @@ def payload_pw_scrape(model: str) -> Dict[str, Any]:
     )
 
 
-def payload_pw_wait_and_click(model: str) -> Dict[str, Any]:
+def payload_pw_wait_and_click(model: str) -> dict[str, Any]:
     """Wait for element then interact — async page handling."""
     return _payload(
         model,

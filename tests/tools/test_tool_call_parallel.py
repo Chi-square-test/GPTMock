@@ -5,6 +5,7 @@ This helps observe how GPTMock/upstream handle parallel tool invocation behavior
 """
 
 import json
+
 import requests
 
 URL = "http://127.0.0.1:8000/v1/chat/completions"

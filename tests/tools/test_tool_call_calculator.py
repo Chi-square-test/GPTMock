@@ -5,6 +5,7 @@ This uses OpenAI Responses-compatible tool schema used by the server's converter
 """
 
 import json
+
 import requests
 
 URL = "http://127.0.0.1:8000/v1/chat/completions"
