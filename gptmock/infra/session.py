@@ -4,18 +4,16 @@ import hashlib
 import json
 import threading
 import uuid
-from typing import Any, Dict, List, Tuple
-
+from typing import Any
 
 _LOCK = threading.Lock()
-_FINGERPRINT_TO_UUID: Dict[str, str] = {}
-_ORDER: List[str] = []
+_FINGERPRINT_TO_UUID: dict[str, str] = {}
+_ORDER: list[str] = []
 _MAX_ENTRIES = 10000
 
 
-def _canonicalize_first_user_message(input_items: List[Dict[str, Any]]) -> Dict[str, Any] | None:
-    """
-    Extract the first stable user message from Responses input items. Good use for a fingerprint for prompt caching.
+def _canonicalize_first_user_message(input_items: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Extract the first stable user message from Responses input items. Good use for a fingerprint for prompt caching.
     """
     for item in input_items:
         if not isinstance(item, dict):
@@ -46,8 +44,8 @@ def _canonicalize_first_user_message(input_items: List[Dict[str, Any]]) -> Dict[
     return None
 
 
-def canonicalize_prefix(instructions: str | None, input_items: List[Dict[str, Any]]) -> str:
-    prefix: Dict[str, Any] = {}
+def canonicalize_prefix(instructions: str | None, input_items: list[dict[str, Any]]) -> str:
+    prefix: dict[str, Any] = {}
     if isinstance(instructions, str) and instructions.strip():
         prefix["instructions"] = instructions.strip()
     first_user = _canonicalize_first_user_message(input_items)
@@ -72,7 +70,7 @@ def _remember(fp: str, sid: str) -> None:
 
 def ensure_session_id(
     instructions: str | None,
-    input_items: List[Dict[str, Any]],
+    input_items: list[dict[str, Any]],
     client_supplied: str | None = None,
 ) -> str:
     if isinstance(client_supplied, str) and client_supplied.strip():

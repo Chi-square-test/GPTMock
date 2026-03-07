@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass
@@ -14,7 +13,7 @@ class TokenData:
 
 @dataclass
 class AuthBundle:
-    api_key: Optional[str]
+    api_key: str | None
     token_data: TokenData
     last_refresh: str
 

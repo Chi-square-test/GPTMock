@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+import httpx
+from fastapi import Request
+
 from .settings import Settings
 
 
@@ -10,6 +13,6 @@ def get_settings() -> Settings:
     return Settings()
 
 
-def get_http_client():
-    from gptmock.app import get_http_client as _get_http_client
-    return _get_http_client()
+def get_http_client(request: Request) -> httpx.AsyncClient:
+    """FastAPI dependency — returns the lifespan-managed httpx client."""
+    return request.app.state.http_client

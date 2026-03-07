@@ -1,22 +1,21 @@
 from __future__ import annotations
 
-import errno
 import argparse
+import errno
 import json
 import os
 import sys
 import webbrowser
-from datetime import datetime
+from datetime import UTC, datetime
 
 from gptmock.core.constants import CLIENT_ID_DEFAULT
+from gptmock.infra.auth import eprint, get_home_dir, parse_jwt_claims, read_auth_file
 from gptmock.infra.limits import (
     RateLimitWindow,
     compute_reset_at,
     load_rate_limit_snapshot,
 )
-from gptmock.infra.oauth import OAuthHTTPServer, OAuthHandler, REQUIRED_PORT, URL_BASE
-from gptmock.infra.auth import eprint, get_home_dir, parse_jwt_claims, read_auth_file
-
+from gptmock.infra.oauth import REQUIRED_PORT, URL_BASE, OAuthHandler, OAuthHTTPServer
 
 _STATUS_LIMIT_BAR_SEGMENTS = 30
 _STATUS_LIMIT_BAR_FILLED = "█"
@@ -99,12 +98,11 @@ def _render_progress_bar(percent_used: float) -> str:
 def _get_usage_color(percent_used: float) -> str:
     if percent_used >= 90:
         return "\033[91m"
-    elif percent_used >= 75:
+    if percent_used >= 75:
         return "\033[93m"
-    elif percent_used >= 50:
+    if percent_used >= 50:
         return "\033[94m"
-    else:
-        return "\033[92m"
+    return "\033[92m"
 
 
 def _reset_color() -> str:
@@ -262,19 +260,18 @@ def _format_token_expiry(exp_timestamp: int | float | None) -> tuple[str, bool]:
                 f"{date_str} {tz_name} ({time_str} ago) \033[91m[EXPIRED]\033[0m",
                 True,
             )
-        else:
-            return f"{date_str} {tz_name} ({time_str} left)", False
+        return f"{date_str} {tz_name} ({time_str} left)", False
     except Exception:
         return "unknown", False
 
 
-_UTC = __import__("datetime").timezone.utc
+_UTC = UTC
 
 
 def cmd_info(auth: dict[str, object] | None) -> int:
     if not isinstance(auth, dict):
         print("  Not signed in")
-        print(f"  Run: uvx gptmock login")
+        print("  Run: uvx gptmock login")
         print()
         _print_usage_limits_block()
         return 0
@@ -289,7 +286,7 @@ def cmd_info(auth: dict[str, object] | None) -> int:
 
     if not access_token and not id_token:
         print("  Not signed in")
-        print(f"  Run: uvx gptmock login")
+        print("  Run: uvx gptmock login")
         print()
         _print_usage_limits_block()
         return 0
@@ -324,10 +321,10 @@ def cmd_info(auth: dict[str, object] | None) -> int:
 
     if not account_id:
         account_id = auth_data.get("chatgpt_account_id") or access_auth_data.get(
-            "chatgpt_account_id"
+            "chatgpt_account_id",
         )
     user_id = auth_data.get("chatgpt_user_id") or access_auth_data.get(
-        "chatgpt_user_id"
+        "chatgpt_user_id",
     )
 
     sub_start = auth_data.get("chatgpt_subscription_active_start")
@@ -378,7 +375,7 @@ def cmd_info(auth: dict[str, object] | None) -> int:
     if last_refresh:
         try:
             lr_dt = datetime.fromisoformat(
-                last_refresh.replace("Z", "+00:00")
+                last_refresh.replace("Z", "+00:00"),
             ).astimezone()
             tz_name = lr_dt.tzname() or "local"
             print(f"  Refreshed : {lr_dt.strftime('%Y-%m-%d %H:%M')} {tz_name}")
@@ -388,12 +385,12 @@ def cmd_info(auth: dict[str, object] | None) -> int:
     if access_expired:
         print()
         print(
-            f"\033[93m  Access token expired. It will auto-refresh on next server request.\033[0m"
+            "\033[93m  Access token expired. It will auto-refresh on next server request.\033[0m",
         )
-        print(f"\033[93m  Or re-login: uvx gptmock login\033[0m")
+        print("\033[93m  Or re-login: uvx gptmock login\033[0m")
     print()
 
-    print(f"Storage")
+    print("Storage")
     print(f"  Path      : {get_home_dir()}/auth.json")
     print()
 
@@ -408,7 +405,7 @@ def cmd_login(no_browser: bool, verbose: bool) -> int:
     try:
         bind_host = (
             _env_with_legacy(
-                "GPTMOCK_LOGIN_BIND", "CHATGPT_LOCAL_LOGIN_BIND", "127.0.0.1"
+                "GPTMOCK_LOGIN_BIND", "CHATGPT_LOCAL_LOGIN_BIND", "127.0.0.1",
             )
             or "127.0.0.1"
         )
@@ -438,13 +435,13 @@ def cmd_login(no_browser: bool, verbose: bool) -> int:
         def _stdin_paste_worker() -> None:
             try:
                 eprint(
-                    "If the browser can't reach this machine, paste the full redirect URL here and press Enter (or leave blank to keep waiting):"
+                    "If the browser can't reach this machine, paste the full redirect URL here and press Enter (or leave blank to keep waiting):",
                 )
                 line = sys.stdin.readline().strip()
                 if not line:
                     return
                 try:
-                    from urllib.parse import urlparse, parse_qs
+                    from urllib.parse import parse_qs, urlparse
 
                     parsed = urlparse(line)
                     params = parse_qs(parsed.query)
@@ -493,6 +490,7 @@ def cmd_serve(
     debug_model: str | None,
     expose_reasoning_models: bool,
     default_web_search: bool,
+    cors_origins: str,
 ) -> int:
     auth = read_auth_file()
     if not isinstance(auth, dict) or not auth.get("tokens"):
@@ -519,6 +517,8 @@ def cmd_serve(
         os.environ["GPTMOCK_EXPOSE_REASONING_MODELS"] = "true"
     if default_web_search:
         os.environ["GPTMOCK_DEFAULT_WEB_SEARCH"] = "true"
+    if cors_origins:
+        os.environ["GPTMOCK_CORS_ORIGINS"] = cors_origins
 
     os.environ["GPTMOCK_HOST"] = host
     os.environ["GPTMOCK_PORT"] = str(port)
@@ -537,7 +537,7 @@ def cmd_serve(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="ChatGPT Local: login & OpenAI-compatible proxy"
+        description="ChatGPT Local: login & OpenAI-compatible proxy",
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -548,7 +548,7 @@ def main() -> None:
         help="Do not open the browser automatically",
     )
     p_login.add_argument(
-        "--verbose", action="store_true", help="Enable verbose logging"
+        "--verbose", action="store_true", help="Enable verbose logging",
     )
 
     p_serve = sub.add_parser("serve", help="Run local OpenAI-compatible server")
@@ -584,7 +584,7 @@ def main() -> None:
         choices=["minimal", "low", "medium", "high", "xhigh"],
         default=(
             _env_with_legacy(
-                "GPTMOCK_REASONING_EFFORT", "CHATGPT_LOCAL_REASONING_EFFORT"
+                "GPTMOCK_REASONING_EFFORT", "CHATGPT_LOCAL_REASONING_EFFORT",
             )
             or "medium"
         ).lower(),
@@ -595,7 +595,7 @@ def main() -> None:
         choices=["auto", "concise", "detailed", "none"],
         default=(
             _env_with_legacy(
-                "GPTMOCK_REASONING_SUMMARY", "CHATGPT_LOCAL_REASONING_SUMMARY"
+                "GPTMOCK_REASONING_SUMMARY", "CHATGPT_LOCAL_REASONING_SUMMARY",
             )
             or "auto"
         ).lower(),
@@ -606,7 +606,7 @@ def main() -> None:
         choices=["legacy", "o3", "think-tags", "current"],
         default=(
             _env_with_legacy(
-                "GPTMOCK_REASONING_COMPAT", "CHATGPT_LOCAL_REASONING_COMPAT"
+                "GPTMOCK_REASONING_COMPAT", "CHATGPT_LOCAL_REASONING_COMPAT",
             )
             or "think-tags"
         ).lower(),
@@ -619,7 +619,7 @@ def main() -> None:
         "--expose-reasoning-models",
         action="store_true",
         default=_env_truthy(
-            "GPTMOCK_EXPOSE_REASONING_MODELS", "CHATGPT_LOCAL_EXPOSE_REASONING_MODELS"
+            "GPTMOCK_EXPOSE_REASONING_MODELS", "CHATGPT_LOCAL_EXPOSE_REASONING_MODELS",
         ),
         help=(
             "Expose GPT-5 family reasoning effort variants (minimal|low|medium|high|xhigh where supported) "
@@ -630,19 +630,27 @@ def main() -> None:
         "--enable-web-search",
         action=argparse.BooleanOptionalAction,
         default=_env_truthy(
-            "GPTMOCK_DEFAULT_WEB_SEARCH", "CHATGPT_LOCAL_ENABLE_WEB_SEARCH"
+            "GPTMOCK_DEFAULT_WEB_SEARCH", "CHATGPT_LOCAL_ENABLE_WEB_SEARCH",
         ),
         help=(
             "Enable default web_search tool when a request omits responses_tools (off by default). "
             "Also configurable via GPTMOCK_DEFAULT_WEB_SEARCH (legacy: CHATGPT_LOCAL_ENABLE_WEB_SEARCH)."
         ),
     )
+    p_serve.add_argument(
+        "--cors-origins",
+        default=_env_with_legacy("GPTMOCK_CORS_ORIGINS", default="*"),
+        help=(
+            "Comma-separated list of allowed CORS origins (default: '*' allows all). "
+            "Also configurable via GPTMOCK_CORS_ORIGINS."
+        ),
+    )
 
     p_info = sub.add_parser(
-        "info", help="Print current stored tokens and derived account id"
+        "info", help="Print current stored tokens and derived account id",
     )
     p_info.add_argument(
-        "--json", action="store_true", help="Output raw auth.json contents"
+        "--json", action="store_true", help="Output raw auth.json contents",
     )
 
     args = parser.parse_args()
@@ -662,7 +670,8 @@ def main() -> None:
                 debug_model=args.debug_model,
                 expose_reasoning_models=args.expose_reasoning_models,
                 default_web_search=args.enable_web_search,
-            )
+                cors_origins=args.cors_origins,
+            ),
         )
     elif args.command == "info":
         auth = read_auth_file()

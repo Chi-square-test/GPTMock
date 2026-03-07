@@ -1,22 +1,21 @@
 from __future__ import annotations
 
 import datetime
-import ssl
 import http.server
 import json
 import secrets
+import ssl
 import threading
 import time
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, Tuple
+from typing import Any
 
 import certifi
 
 from gptmock.core.constants import OAUTH_ISSUER_DEFAULT
-from gptmock.core.models import AuthBundle, PkceCodes, TokenData
+from gptmock.core.models import AuthBundle, TokenData
 from gptmock.infra.auth import eprint, generate_pkce, parse_jwt_claims, write_auth_file
-
 
 REQUIRED_PORT = 1455
 URL_BASE = f"http://localhost:{REQUIRED_PORT}"
@@ -30,7 +29,7 @@ LOGIN_SUCCESS_HTML = """<!DOCTYPE html>
     <title>Login successful</title>
   </head>
   <body>
-    <div style=\"max-width: 640px; margin: 80px auto; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;\"> 
+    <div style=\"max-width: 640px; margin: 80px auto; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;\">
       <h1>Login successful</h1>
       <p>You can now close this window and return to the terminal and run <code>uvx gptmock serve</code> to start the server.</p>
     </div>
@@ -84,7 +83,7 @@ class OAuthHTTPServer(http.server.HTTPServer):
                 "redirect_uri": self.redirect_uri,
                 "client_id": self.client_id,
                 "code_verifier": self.pkce.code_verifier,
-            }
+            },
         ).encode()
 
         with urllib.request.urlopen(
@@ -116,19 +115,19 @@ class OAuthHTTPServer(http.server.HTTPServer):
         )
 
         api_key, success_url = self.maybe_obtain_api_key(
-            id_token_claims or {}, access_token_claims or {}, token_data
+            id_token_claims or {}, access_token_claims or {}, token_data,
         )
 
         last_refresh_str = (
-            datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+            datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
         )
         bundle = AuthBundle(api_key=api_key, token_data=token_data, last_refresh=last_refresh_str)
         return bundle, success_url or f"{URL_BASE}/success"
 
     def maybe_obtain_api_key(
         self,
-        token_claims: Dict[str, Any],
-        access_claims: Dict[str, Any],
+        token_claims: dict[str, Any],
+        access_claims: dict[str, Any],
         token_data: TokenData,
     ) -> tuple[str | None, str | None]:
         org_id = token_claims.get("organization_id")
@@ -144,7 +143,7 @@ class OAuthHTTPServer(http.server.HTTPServer):
             }
             return None, f"{URL_BASE}/success?{urllib.parse.urlencode(query)}"
 
-        today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+        today = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d")
         exchange_data = urllib.parse.urlencode(
             {
                 "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
@@ -153,7 +152,7 @@ class OAuthHTTPServer(http.server.HTTPServer):
                 "subject_token": token_data.id_token,
                 "subject_token_type": "urn:ietf:params:oauth:token-type:id_token",
                 "name": f"ChatGPT Local [auto-generated] ({today})",
-            }
+            },
         ).encode()
 
         with urllib.request.urlopen(
@@ -197,7 +196,7 @@ class OAuthHTTPServer(http.server.HTTPServer):
 
 
 class OAuthHandler(http.server.BaseHTTPRequestHandler):
-    server: "OAuthHTTPServer"
+    server: OAuthHTTPServer
 
     def do_GET(self) -> None:
         path = urllib.parse.urlparse(self.path).path
@@ -281,60 +280,6 @@ class OAuthHandler(http.server.BaseHTTPRequestHandler):
 
         threading.Thread(target=_later, daemon=True).start()
 
-    def _exchange_code(self, code: str) -> Tuple[AuthBundle, str]:
+    def _exchange_code(self, code: str) -> tuple[AuthBundle, str]:
         return self.server.exchange_code(code)
 
-    def _maybe_obtain_api_key(
-        self,
-        token_claims: Dict[str, Any],
-        access_claims: Dict[str, Any],
-        token_data: TokenData,
-    ) -> Tuple[str | None, str | None]:
-        org_id = token_claims.get("organization_id")
-        project_id = token_claims.get("project_id")
-        if not org_id or not project_id:
-            query = {
-                "id_token": token_data.id_token,
-                "needs_setup": "false",
-                "org_id": org_id or "",
-                "project_id": project_id or "",
-                "plan_type": access_claims.get("chatgpt_plan_type"),
-                "platform_url": "https://platform.openai.com",
-            }
-            return None, f"{URL_BASE}/success?{urllib.parse.urlencode(query)}"
-
-        today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-        exchange_data = urllib.parse.urlencode(
-            {
-                "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
-                "client_id": self.server.client_id,
-                "requested_token": "openai-api-key",
-                "subject_token": token_data.id_token,
-                "subject_token_type": "urn:ietf:params:oauth:token-type:id_token",
-                "name": f"ChatGPT Local [auto-generated] ({today})",
-            }
-        ).encode()
-
-        with urllib.request.urlopen(
-            urllib.request.Request(
-                self.server.token_endpoint,
-                data=exchange_data,
-                method="POST",
-                headers={"Content-Type": "application/x-www-form-urlencoded"},
-            ),
-            context=_SSL_CONTEXT,
-        ) as resp:
-            exchange_payload = json.loads(resp.read().decode())
-            exchanged_access_token = exchange_payload.get("access_token")
-
-        chatgpt_plan_type = access_claims.get("chatgpt_plan_type")
-        success_url_query = {
-            "id_token": token_data.id_token,
-            "needs_setup": "false",
-            "org_id": org_id,
-            "project_id": project_id,
-            "plan_type": chatgpt_plan_type,
-            "platform_url": "https://platform.openai.com",
-        }
-        success_url = f"{URL_BASE}/success?{urllib.parse.urlencode(success_url_query)}"
-        return exchanged_access_token, success_url

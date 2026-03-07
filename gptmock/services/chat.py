@@ -1,30 +1,83 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
-from typing import Any, Dict, List
+from dataclasses import dataclass, field
+from typing import Any
 
 import httpx
 
-from gptmock.core.constants import CHATGPT_RESPONSES_URL
+from gptmock.core.constants import (
+    SSE_CONTENT_PART_DONE,
+    SSE_OUTPUT_ITEM_DONE,
+    SSE_OUTPUT_TEXT_DELTA,
+    SSE_REASONING_SUMMARY_TEXT_DELTA,
+    SSE_REASONING_TEXT_DELTA,
+    SSE_RESPONSE_COMPLETED,
+    SSE_RESPONSE_FAILED,
+)
 from gptmock.core.logging import log_json
 from gptmock.core.settings import Settings
+from gptmock.core.utils import extract_usage
 from gptmock.infra.auth import get_effective_chatgpt_auth
-from gptmock.infra.sse import sse_translate_chat, sse_translate_text
 from gptmock.infra.session import ensure_session_id
-from gptmock.schemas.messages import convert_chat_messages_to_responses_input, convert_tools_chat_to_responses
-from gptmock.services.model_registry import get_instructions_for_model, normalize_model_name
+from gptmock.infra.sse import sse_translate_chat, sse_translate_text
+from gptmock.schemas.messages import (
+    convert_chat_messages_to_responses_input,
+    convert_tools_chat_to_responses,
+)
+from gptmock.services.model_registry import (
+    get_instructions_for_model,
+    normalize_model_name,
+)
 from gptmock.services.reasoning import (
     allowed_efforts_for_model,
     apply_reasoning_to_message,
     build_reasoning_param,
     extract_reasoning_from_model_name,
 )
+from gptmock.services.upstream import UpstreamError, send_upstream_request
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ChatCompletionContext:
+    """Mutable context threaded through the chat completion pipeline."""
+
+    payload: dict[str, Any]
+    settings: Settings
+    http_client: httpx.AsyncClient
+    client_session_id: str | None = None
+    is_stream_override: bool | None = None
+    requested_model: str | None = None
+    model: str = ""
+    messages: list[dict[str, Any]] = field(default_factory=list)
+    is_stream: bool = False
+    include_usage: bool = False
+    reasoning_param: dict[str, Any] | None = None
+    instructions: str | None = None
+    tools_responses: list[dict[str, Any]] | None = None
+    tool_choice: Any = "auto"
+    parallel_tool_calls: bool = False
+    had_responses_tools: bool = False
+    text_format: dict[str, Any] | None = None
+    input_items: list[dict[str, Any]] = field(default_factory=list)
+    access_token: str | None = None
+    account_id: str | None = None
+    session_id: str = ""
 
 
 class ChatCompletionError(Exception):
     """Exception raised during chat completion processing."""
-    def __init__(self, message: str, status_code: int = 500, error_data: Dict[str, Any] | None = None):
+
+    def __init__(
+        self,
+        message: str,
+        status_code: int = 500,
+        error_data: dict[str, Any] | None = None,
+    ):
         super().__init__(message)
         self.message = message
         self.status_code = status_code
@@ -33,7 +86,7 @@ class ChatCompletionError(Exception):
 
 async def _call_upstream(
     model: str,
-    input_items: List[Dict[str, Any]],
+    input_items: list[dict[str, Any]],
     access_token: str,
     account_id: str,
     session_id: str,
@@ -41,81 +94,53 @@ async def _call_upstream(
     settings: Settings,
     *,
     instructions: str | None = None,
-    tools: List[Dict[str, Any]] | None = None,
+    tools: list[dict[str, Any]] | None = None,
     tool_choice: Any | None = None,
     parallel_tool_calls: bool = False,
-    reasoning_param: Dict[str, Any] | None = None,
-    text_format: Dict[str, Any] | None = None,
+    reasoning_param: dict[str, Any] | None = None,
+    text_format: dict[str, Any] | None = None,
 ) -> httpx.Response:
-    """Call ChatGPT Responses API with upstream request."""
-    include: List[str] = []
+    """Build a Responses-API payload and send it upstream."""
+    include: list[str] = []
     if isinstance(reasoning_param, dict):
         include.append("reasoning.encrypted_content")
 
-    responses_payload = {
+    payload: dict[str, Any] = {
         "model": model,
-        "instructions": instructions if isinstance(instructions, str) and instructions.strip() else instructions,
+        "instructions": instructions
+        if isinstance(instructions, str) and instructions.strip()
+        else instructions,
         "input": input_items,
         "tools": tools or [],
-        "tool_choice": tool_choice if tool_choice in ("auto", "none") or isinstance(tool_choice, dict) else "auto",
+        "tool_choice": tool_choice
+        if tool_choice in ("auto", "none") or isinstance(tool_choice, dict)
+        else "auto",
         "parallel_tool_calls": bool(parallel_tool_calls),
         "store": False,
         "stream": True,
         "prompt_cache_key": session_id,
     }
     if include:
-        responses_payload["include"] = include
-
+        payload["include"] = include
     if reasoning_param is not None:
-        responses_payload["reasoning"] = reasoning_param
-
+        payload["reasoning"] = reasoning_param
     if isinstance(text_format, dict):
-        responses_payload["text"] = {"format": text_format}
-
-    if settings.verbose:
-        log_json("OUTBOUND >> ChatGPT Responses API payload", responses_payload, logger=print)
-
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
-        "Accept": "text/event-stream",
-        "chatgpt-account-id": account_id,
-        "OpenAI-Beta": "responses=experimental",
-        "session_id": session_id,
-    }
+        payload["text"] = {"format": text_format}
 
     try:
-        req = http_client.build_request(
-            "POST",
-            CHATGPT_RESPONSES_URL,
-            headers=headers,
-            json=responses_payload,
-            timeout=600.0,
+        return await send_upstream_request(
+            payload,
+            access_token,
+            account_id,
+            session_id,
+            http_client,
+            verbose=settings.verbose,
         )
-        upstream = await http_client.send(req, stream=True)
-        return upstream
-    except httpx.RequestError as e:
-        raise ChatCompletionError(
-            f"Upstream ChatGPT request failed: {e}",
-            status_code=502,
-        ) from e
+    except UpstreamError as e:
+        raise ChatCompletionError(e.message, status_code=e.status_code) from e
 
 
-def _extract_usage(evt: Dict[str, Any]) -> Dict[str, int] | None:
-    """Extract usage statistics from upstream event (for non-streaming)."""
-    try:
-        usage = (evt.get("response") or {}).get("usage")
-        if not isinstance(usage, dict):
-            return None
-        pt = int(usage.get("input_tokens") or 0)
-        ct = int(usage.get("output_tokens") or 0)
-        tt = int(usage.get("total_tokens") or (pt + ct))
-        return {"prompt_tokens": pt, "completion_tokens": ct, "total_tokens": tt}
-    except Exception:
-        return None
-
-
-def _build_text_format(response_format: Any) -> Dict[str, Any] | None:
+def _build_text_format(response_format: Any) -> dict[str, Any] | None:
     if not isinstance(response_format, dict):
         return None
 
@@ -131,7 +156,11 @@ def _build_text_format(response_format: Any) -> Dict[str, Any] | None:
         schema = source.get("schema") if isinstance(source, dict) else None
         strict = source.get("strict") if isinstance(source, dict) else None
 
-        if not isinstance(name, str) or not name.strip() or not isinstance(schema, dict):
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or not isinstance(schema, dict)
+        ):
             raise ChatCompletionError(
                 "response_format.type=json_schema requires json_schema.name and json_schema.schema",
                 status_code=400,
@@ -139,11 +168,15 @@ def _build_text_format(response_format: Any) -> Dict[str, Any] | None:
                     "error": {
                         "message": "response_format.type=json_schema requires json_schema.name and json_schema.schema",
                         "code": "INVALID_RESPONSE_FORMAT",
-                    }
+                    },
                 },
             )
 
-        out: Dict[str, Any] = {"type": "json_schema", "name": name.strip(), "schema": schema}
+        out: dict[str, Any] = {
+            "type": "json_schema",
+            "name": name.strip(),
+            "schema": schema,
+        }
         if isinstance(strict, bool):
             out["strict"] = strict
         return out
@@ -161,54 +194,30 @@ def _build_text_format(response_format: Any) -> Dict[str, Any] | None:
             "error": {
                 "message": f"Unsupported response_format.type: {fmt_type}",
                 "code": "INVALID_RESPONSE_FORMAT",
-            }
+            },
         },
     )
 
 
-def _is_strict_json_text_format(text_format: Dict[str, Any] | None) -> bool:
+def _is_strict_json_text_format(text_format: dict[str, Any] | None) -> bool:
     if not isinstance(text_format, dict):
         return False
     t = text_format.get("type")
     return isinstance(t, str) and t in ("json_schema", "json_object")
 
 
-async def process_chat_completion(
-    payload: Dict[str, Any],
-    settings: Settings,
-    http_client: httpx.AsyncClient,
-    *,
-    client_session_id: str | None = None,
-    is_stream: bool | None = None,
-) -> tuple[Any, bool]:
-    """
-    Process chat completion request.
-    
-    Args:
-        payload: Request payload (OpenAI or Ollama format)
-        settings: Application settings
-        http_client: Async HTTP client
-        client_session_id: Optional session ID from request headers
-        is_stream: Override stream setting (None = use payload)
-    
-    Returns:
-        Tuple of (response_generator_or_dict, is_streaming)
-    
-    Raises:
-        ChatCompletionError: On processing errors
-    """
-    # 1. Extract and validate request parameters
-    requested_model = payload.get("model")
+def _extract_and_normalize(ctx: ChatCompletionContext) -> None:
+    payload = ctx.payload
+    ctx.requested_model = payload.get("model")
     messages = payload.get("messages")
-    
-    # Handle alternative message fields
+
     if messages is None and isinstance(payload.get("prompt"), str):
         messages = [{"role": "user", "content": payload.get("prompt") or ""}]
     if messages is None and isinstance(payload.get("input"), str):
         messages = [{"role": "user", "content": payload.get("input") or ""}]
     if messages is None:
         messages = []
-    
+
     if not isinstance(messages, list):
         err_data = {"error": {"message": "Request must include messages: []"}}
         raise ChatCompletionError(
@@ -217,51 +226,68 @@ async def process_chat_completion(
             error_data=err_data,
         )
 
-    # 2. Move system messages to user role (ChatGPT doesn't support system role)
-    if isinstance(messages, list):
-        sys_idx = next((i for i, m in enumerate(messages) if isinstance(m, dict) and m.get("role") == "system"), None)
-        if isinstance(sys_idx, int):
-            sys_msg = messages.pop(sys_idx)
-            content = sys_msg.get("content") if isinstance(sys_msg, dict) else ""
-            messages.insert(0, {"role": "user", "content": content})
+    sys_idx = next(
+        (
+            i
+            for i, m in enumerate(messages)
+            if isinstance(m, dict) and m.get("role") == "system"
+        ),
+        None,
+    )
+    if isinstance(sys_idx, int):
+        sys_msg = messages.pop(sys_idx)
+        content = sys_msg.get("content") if isinstance(sys_msg, dict) else ""
+        messages.insert(0, {"role": "user", "content": content})
 
-    # 3. Determine streaming mode
-    if is_stream is None:
-        is_stream = bool(payload.get("stream", False))
-    
-    stream_options = payload.get("stream_options") if isinstance(payload.get("stream_options"), dict) else {}
-    include_usage = bool(stream_options.get("include_usage", False))
+    ctx.messages = messages
+    ctx.is_stream = (
+        bool(payload.get("stream", False))
+        if ctx.is_stream_override is None
+        else bool(ctx.is_stream_override)
+    )
+    stream_options_obj = payload.get("stream_options")
+    stream_options: dict[str, Any] = (
+        stream_options_obj if isinstance(stream_options_obj, dict) else {}
+    )
+    ctx.include_usage = bool(stream_options.get("include_usage", False))
+    ctx.model = normalize_model_name(ctx.requested_model, ctx.settings.debug_model)
 
-    # 4. Normalize model name
-    model = normalize_model_name(requested_model, settings.debug_model)
 
-    # 5. Build reasoning parameters
-    model_reasoning = extract_reasoning_from_model_name(requested_model)
-    reasoning_overrides = payload.get("reasoning") if isinstance(payload.get("reasoning"), dict) else model_reasoning
-    reasoning_param = build_reasoning_param(
+def _derive_policies(ctx: ChatCompletionContext) -> None:
+    payload = ctx.payload
+    settings = ctx.settings
+
+    model_reasoning = extract_reasoning_from_model_name(ctx.requested_model)
+    reasoning_overrides = (
+        payload.get("reasoning")
+        if isinstance(payload.get("reasoning"), dict)
+        else model_reasoning
+    )
+    ctx.reasoning_param = build_reasoning_param(
         settings.reasoning_effort,
         settings.reasoning_summary,
         reasoning_overrides,
-        allowed_efforts=allowed_efforts_for_model(model),
+        allowed_efforts=allowed_efforts_for_model(ctx.model),
     )
 
-    # 6. Get system instructions
-    instructions = get_instructions_for_model(
-        model,
+    ctx.instructions = get_instructions_for_model(
+        ctx.model,
         settings.base_instructions,
         settings.gpt5_codex_instructions,
     )
 
-    # 7. Process tools
-    tools_responses = convert_tools_chat_to_responses(payload.get("tools"))
-    tool_choice = payload.get("tool_choice", "auto")
-    parallel_tool_calls = bool(payload.get("parallel_tool_calls", False))
-    
-    # Handle responses_tools (web_search, etc.)
-    extra_tools: List[Dict[str, Any]] = []
-    had_responses_tools = False
-    responses_tools_payload = payload.get("responses_tools") if isinstance(payload.get("responses_tools"), list) else []
-    
+    ctx.tools_responses = convert_tools_chat_to_responses(payload.get("tools"))
+    ctx.tool_choice = payload.get("tool_choice", "auto")
+    ctx.parallel_tool_calls = bool(payload.get("parallel_tool_calls", False))
+
+    extra_tools: list[dict[str, Any]] = []
+    ctx.had_responses_tools = False
+    responses_tools_payload = (
+        payload.get("responses_tools")
+        if isinstance(payload.get("responses_tools"), list)
+        else []
+    )
+
     if isinstance(responses_tools_payload, list):
         for _t in responses_tools_payload:
             if not (isinstance(_t, dict) and isinstance(_t.get("type"), str)):
@@ -274,14 +300,17 @@ async def process_chat_completion(
                         "error": {
                             "message": "Only web_search/web_search_preview are supported in responses_tools",
                             "code": "RESPONSES_TOOL_UNSUPPORTED",
-                        }
+                        },
                     },
                 )
             extra_tools.append(_t)
 
         if not extra_tools and settings.default_web_search:
             responses_tool_choice = payload.get("responses_tool_choice")
-            if not (isinstance(responses_tool_choice, str) and responses_tool_choice == "none"):
+            if not (
+                isinstance(responses_tool_choice, str)
+                and responses_tool_choice == "none"
+            ):
                 extra_tools = [{"type": "web_search"}]
 
         if extra_tools:
@@ -289,277 +318,500 @@ async def process_chat_completion(
             try:
                 size = len(json.dumps(extra_tools))
             except Exception:
+                logger.debug("Failed to calculate tools JSON size", exc_info=True)
                 size = 0
             if size > MAX_TOOLS_BYTES:
                 raise ChatCompletionError(
                     "responses_tools too large",
                     status_code=400,
-                    error_data={"error": {"message": "responses_tools too large", "code": "RESPONSES_TOOLS_TOO_LARGE"}},
+                    error_data={
+                        "error": {
+                            "message": "responses_tools too large",
+                            "code": "RESPONSES_TOOLS_TOO_LARGE",
+                        },
+                    },
                 )
-            had_responses_tools = True
-            tools_responses = (tools_responses or []) + extra_tools
+            ctx.had_responses_tools = True
+            ctx.tools_responses = (ctx.tools_responses or []) + extra_tools
 
     responses_tool_choice = payload.get("responses_tool_choice")
-    if isinstance(responses_tool_choice, str) and responses_tool_choice in ("auto", "none"):
-        tool_choice = responses_tool_choice
+    if isinstance(responses_tool_choice, str) and responses_tool_choice in (
+        "auto",
+        "none",
+    ):
+        ctx.tool_choice = responses_tool_choice
 
-    text_format = _build_text_format(payload.get("response_format"))
 
-    # 8. Convert messages to upstream format
-    input_items = convert_chat_messages_to_responses_input(messages)
-    if not input_items and isinstance(payload.get("prompt"), str) and payload.get("prompt").strip():
-        input_items = [
-            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": payload.get("prompt")}]}
+def _build_upstream_request(ctx: ChatCompletionContext) -> None:
+    payload = ctx.payload
+    ctx.text_format = _build_text_format(payload.get("response_format"))
+
+    ctx.input_items = convert_chat_messages_to_responses_input(ctx.messages)
+    prompt = payload.get("prompt")
+    if not ctx.input_items and isinstance(prompt, str) and prompt.strip():
+        ctx.input_items = [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": prompt}],
+            },
         ]
 
-    # 9. Get auth credentials
-    access_token, account_id = await get_effective_chatgpt_auth()
-    if not access_token or not account_id:
+
+async def _authenticate(ctx: ChatCompletionContext) -> None:
+    ctx.access_token, ctx.account_id = await get_effective_chatgpt_auth()
+    if not ctx.access_token or not ctx.account_id:
         raise ChatCompletionError(
             "Missing ChatGPT credentials. Run 'python3 gptmock.py login' first.",
             status_code=401,
-            error_data={"error": {"message": "Missing ChatGPT credentials. Run 'python3 gptmock.py login' first."}},
+            error_data={
+                "error": {
+                    "message": "Missing ChatGPT credentials. Run 'python3 gptmock.py login' first.",
+                },
+            },
         )
 
-    # 10. Get or create session ID
-    session_id = ensure_session_id(instructions, input_items, client_session_id)
+    ctx.session_id = ensure_session_id(
+        ctx.instructions,
+        ctx.input_items,
+        ctx.client_session_id,
+    )
 
-    # 11. Call upstream
+
+async def _call_upstream_with_context(
+    ctx: ChatCompletionContext,
+    *,
+    instructions: str | None,
+    tools: list[dict[str, Any]] | None,
+    tool_choice: Any,
+) -> httpx.Response:
+    if not ctx.access_token or not ctx.account_id:
+        raise ChatCompletionError(
+            "Missing ChatGPT credentials. Run 'python3 gptmock.py login' first.",
+            status_code=401,
+            error_data={
+                "error": {
+                    "message": "Missing ChatGPT credentials. Run 'python3 gptmock.py login' first.",
+                },
+            },
+        )
+
+    return await _call_upstream(
+        model=ctx.model,
+        input_items=ctx.input_items,
+        access_token=ctx.access_token,
+        account_id=ctx.account_id,
+        session_id=ctx.session_id,
+        http_client=ctx.http_client,
+        settings=ctx.settings,
+        instructions=instructions,
+        tools=tools,
+        tool_choice=tool_choice,
+        parallel_tool_calls=ctx.parallel_tool_calls,
+        reasoning_param=ctx.reasoning_param,
+        text_format=ctx.text_format,
+    )
+
+
+async def _read_upstream_error_body(upstream: httpx.Response) -> Any:
     try:
-        upstream = await _call_upstream(
-            model=model,
-            input_items=input_items,
-            access_token=access_token,
-            account_id=account_id,
-            session_id=session_id,
-            http_client=http_client,
-            settings=settings,
-            instructions=instructions,
-            tools=tools_responses,
-            tool_choice=tool_choice,
-            parallel_tool_calls=parallel_tool_calls,
-            reasoning_param=reasoning_param,
-            text_format=text_format,
+        await upstream.aread()
+        return upstream.json() if upstream.content else {"raw": upstream.text}
+    except Exception:
+        logger.debug("Failed to read upstream error response", exc_info=True)
+        return {"raw": getattr(upstream, "text", "unknown error")}
+
+
+def _extract_upstream_error_message(err_body: Any) -> Any:
+    return (err_body.get("error", {}) or {}).get("message", "Upstream error")
+
+
+async def _retry_without_extra_tools(
+    ctx: ChatCompletionContext,
+    err_body: Any,
+) -> httpx.Response:
+    if ctx.settings.verbose:
+        logger.debug(
+            "[Passthrough] Upstream rejected tools; retrying without extra tools (args redacted)",
         )
-    except ChatCompletionError:
-        raise
 
-    # 12. Handle upstream errors
-    if upstream.status_code >= 400:
-        try:
-            await upstream.aread()
-            err_body = upstream.json() if upstream.content else {"raw": upstream.text}
-        except Exception:
-            err_body = {"raw": getattr(upstream, 'text', 'unknown error')}
+    base_tools_only = convert_tools_chat_to_responses(ctx.payload.get("tools"))
+    safe_choice = ctx.payload.get("tool_choice", "auto")
+    upstream = await _call_upstream_with_context(
+        ctx,
+        instructions=ctx.settings.base_instructions,
+        tools=base_tools_only,
+        tool_choice=safe_choice,
+    )
+    if upstream.status_code < 400:
+        return upstream
 
-        # Retry without extra tools if they were rejected
-        if had_responses_tools:
-            if settings.verbose:
-                print("[Passthrough] Upstream rejected tools; retrying without extra tools (args redacted)")
-            base_tools_only = convert_tools_chat_to_responses(payload.get("tools"))
-            safe_choice = payload.get("tool_choice", "auto")
-            
-            try:
-                upstream2 = await _call_upstream(
-                    model=model,
-                    input_items=input_items,
-                    access_token=access_token,
-                    account_id=account_id,
-                    session_id=session_id,
-                    http_client=http_client,
-                    settings=settings,
-                    instructions=settings.base_instructions,
-                    tools=base_tools_only,
-                    tool_choice=safe_choice,
-                    parallel_tool_calls=parallel_tool_calls,
-                    reasoning_param=reasoning_param,
-                    text_format=text_format,
+    message = _extract_upstream_error_message(err_body)
+    raise ChatCompletionError(
+        message,
+        status_code=upstream.status_code,
+        error_data={
+            "error": {
+                "message": message,
+                "code": "RESPONSES_TOOLS_REJECTED",
+            },
+        },
+    )
+
+
+async def _send_upstream(ctx: ChatCompletionContext) -> httpx.Response:
+    upstream = await _call_upstream_with_context(
+        ctx,
+        instructions=ctx.instructions,
+        tools=ctx.tools_responses,
+        tool_choice=ctx.tool_choice,
+    )
+    if upstream.status_code < 400:
+        return upstream
+
+    err_body = await _read_upstream_error_body(upstream)
+    if ctx.had_responses_tools:
+        return await _retry_without_extra_tools(ctx, err_body)
+
+    if ctx.settings.verbose:
+        logger.debug("Upstream error status=%s", upstream.status_code)
+    message = _extract_upstream_error_message(err_body)
+    raise ChatCompletionError(
+        message,
+        status_code=upstream.status_code,
+        error_data={"error": {"message": message}},
+    )
+
+
+def _adapt_streaming_response(
+    ctx: ChatCompletionContext,
+    upstream: httpx.Response,
+    created: int,
+) -> tuple[Any, bool]:
+    if ctx.settings.verbose:
+        logger.debug(
+            "OUT chat completion (streaming response, model=%s)",
+            ctx.requested_model or ctx.model,
+        )
+
+    stream_iter = sse_translate_chat(
+        upstream,
+        ctx.requested_model or ctx.model,
+        created,
+        verbose=ctx.settings.verbose_obfuscation,
+        vlog=print if ctx.settings.verbose_obfuscation else None,
+        reasoning_compat=ctx.settings.reasoning_compat,
+        include_usage=ctx.include_usage,
+    )
+    return stream_iter, True
+
+
+def _decode_chat_sse_data(raw: str | bytes) -> str | None:
+    if not raw:
+        return None
+    line = raw if isinstance(raw, str) else raw.decode("utf-8", errors="ignore")
+    if not line.startswith("data: "):
+        return None
+    data = line[len("data: ") :].strip()
+    return data or None
+
+
+def _update_chat_sse_metadata(
+    evt: Any,
+    response_id: str,
+    usage_obj: dict[str, int] | None,
+) -> tuple[str, dict[str, int] | None]:
+    mu = extract_usage(evt)
+    if mu:
+        usage_obj = mu
+
+    response = evt.get("response")
+    if isinstance(response, dict) and isinstance(response.get("id"), str):
+        response_id = response.get("id") or response_id
+    return response_id, usage_obj
+
+
+def _handle_chat_sse_event(
+    evt: Any,
+    full_text: str,
+    reasoning_summary_text: str,
+    reasoning_full_text: str,
+    tool_calls: list[dict[str, Any]],
+    annotations: list[dict[str, Any]],
+) -> tuple[str, str, str, str | None, bool]:
+    kind = evt.get("type")
+    if kind == SSE_OUTPUT_TEXT_DELTA:
+        return (
+            full_text + (evt.get("delta") or ""),
+            reasoning_summary_text,
+            reasoning_full_text,
+            None,
+            False,
+        )
+    if kind == SSE_REASONING_SUMMARY_TEXT_DELTA:
+        return (
+            full_text,
+            reasoning_summary_text + (evt.get("delta") or ""),
+            reasoning_full_text,
+            None,
+            False,
+        )
+    if kind == SSE_REASONING_TEXT_DELTA:
+        return (
+            full_text,
+            reasoning_summary_text,
+            reasoning_full_text + (evt.get("delta") or ""),
+            None,
+            False,
+        )
+    if kind == SSE_OUTPUT_ITEM_DONE:
+        item = evt.get("item") or {}
+        if isinstance(item, dict) and item.get("type") == "function_call":
+            call_id = item.get("call_id") or item.get("id") or ""
+            name = item.get("name") or ""
+            args = item.get("arguments") or ""
+            if (
+                isinstance(call_id, str)
+                and isinstance(name, str)
+                and isinstance(args, str)
+            ):
+                tool_calls.append(
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": name, "arguments": args},
+                    },
                 )
-                
-                if upstream2.status_code < 400:
-                    upstream = upstream2
-                else:
-                    raise ChatCompletionError(
-                        (err_body.get("error", {}) or {}).get("message", "Upstream error"),
-                        status_code=upstream2.status_code,
-                        error_data={
-                            "error": {
-                                "message": (err_body.get("error", {}) or {}).get("message", "Upstream error"),
-                                "code": "RESPONSES_TOOLS_REJECTED",
-                            }
-                        },
+        return full_text, reasoning_summary_text, reasoning_full_text, None, False
+    if kind == SSE_CONTENT_PART_DONE:
+        part = evt.get("part")
+        if isinstance(part, dict) and part.get("type") == "output_text":
+            part_annotations = part.get("annotations")
+            if isinstance(part_annotations, list):
+                annotations.extend(part_annotations)
+        return full_text, reasoning_summary_text, reasoning_full_text, None, False
+    if kind == SSE_RESPONSE_FAILED:
+        response = evt.get("response")
+        if isinstance(response, dict):
+            error = response.get("error")
+            if isinstance(error, dict):
+                message = error.get("message")
+                if isinstance(message, str):
+                    return (
+                        full_text,
+                        reasoning_summary_text,
+                        reasoning_full_text,
+                        message,
+                        False,
                     )
-            except ChatCompletionError:
-                raise
-        else:
-            if settings.verbose:
-                print("Upstream error status=", upstream.status_code)
-            raise ChatCompletionError(
-                (err_body.get("error", {}) or {}).get("message", "Upstream error"),
-                status_code=upstream.status_code,
-                error_data={"error": {"message": (err_body.get("error", {}) or {}).get("message", "Upstream error")}},
-            )
-
-    # 13. Return streaming or non-streaming response
-    created = int(time.time())
-    
-    if is_stream:
-        # Return async generator for streaming
-        if settings.verbose:
-            print(f"OUT chat completion (streaming response, model={requested_model or model})")
-        
-        stream_iter = sse_translate_chat(
-            upstream,
-            requested_model or model,
-            created,
-            verbose=settings.verbose_obfuscation,
-            vlog=print if settings.verbose_obfuscation else None,
-            reasoning_compat=settings.reasoning_compat,
-            include_usage=include_usage,
+        return (
+            full_text,
+            reasoning_summary_text,
+            reasoning_full_text,
+            "response.failed",
+            False,
         )
-        return stream_iter, True
-    else:
-        # Collect full response for non-streaming
-        full_text = ""
-        reasoning_summary_text = ""
-        reasoning_full_text = ""
-        response_id = "chatcmpl"
-        tool_calls: List[Dict[str, Any]] = []
-        error_message: str | None = None
-        usage_obj: Dict[str, int] | None = None
-        annotations: List[Dict[str, Any]] = []
+    if kind == SSE_RESPONSE_COMPLETED:
+        return full_text, reasoning_summary_text, reasoning_full_text, None, True
+    return full_text, reasoning_summary_text, reasoning_full_text, None, False
 
-        try:
-            async for raw in upstream.aiter_lines():
-                if not raw:
-                    continue
-                line = raw if isinstance(raw, str) else raw.decode("utf-8", errors="ignore")
-                if not line.startswith("data: "):
-                    continue
-                data = line[len("data: "):].strip()
-                if not data:
-                    continue
-                if data == "[DONE]":
-                    break
-                try:
-                    evt = json.loads(data)
-                except Exception:
-                    continue
-                
-                kind = evt.get("type")
-                mu = _extract_usage(evt)
-                if mu:
-                    usage_obj = mu
-                if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("id"), str):
-                    response_id = evt["response"].get("id") or response_id
-                
-                if kind == "response.output_text.delta":
-                    full_text += evt.get("delta") or ""
-                elif kind == "response.reasoning_summary_text.delta":
-                    reasoning_summary_text += evt.get("delta") or ""
-                elif kind == "response.reasoning_text.delta":
-                    reasoning_full_text += evt.get("delta") or ""
-                elif kind == "response.output_item.done":
-                    item = evt.get("item") or {}
-                    if isinstance(item, dict) and item.get("type") == "function_call":
-                        call_id = item.get("call_id") or item.get("id") or ""
-                        name = item.get("name") or ""
-                        args = item.get("arguments") or ""
-                        if isinstance(call_id, str) and isinstance(name, str) and isinstance(args, str):
-                            tool_calls.append(
-                                {
-                                    "id": call_id,
-                                    "type": "function",
-                                    "function": {"name": name, "arguments": args},
-                                }
-                            )
-                elif kind == "response.content_part.done":
-                    part = evt.get("part")
-                    if isinstance(part, dict) and part.get("type") == "output_text":
-                        part_annotations = part.get("annotations")
-                        if isinstance(part_annotations, list):
-                            annotations.extend(part_annotations)
-                elif kind == "response.failed":
-                    error_message = evt.get("response", {}).get("error", {}).get("message", "response.failed")
-                elif kind == "response.completed":
-                    break
-        finally:
-            await upstream.aclose()
 
-        if error_message:
-            raise ChatCompletionError(
-                error_message,
-                status_code=502,
-                error_data={"error": {"message": error_message}},
+async def _collect_chat_sse_events(
+    upstream: httpx.Response,
+) -> tuple[
+    str,
+    str,
+    str,
+    str,
+    list[dict[str, Any]],
+    str | None,
+    dict[str, int] | None,
+    list[dict[str, Any]],
+]:
+    full_text = ""
+    reasoning_summary_text = ""
+    reasoning_full_text = ""
+    response_id = "chatcmpl"
+    tool_calls: list[dict[str, Any]] = []
+    error_message: str | None = None
+    usage_obj: dict[str, int] | None = None
+    annotations: list[dict[str, Any]] = []
+
+    try:
+        async for raw in upstream.aiter_lines():
+            data = _decode_chat_sse_data(raw)
+            if not data:
+                continue
+            if data == "[DONE]":
+                break
+
+            try:
+                evt = json.loads(data)
+            except Exception:
+                logger.debug("Failed to parse SSE event JSON", exc_info=True)
+                continue
+
+            response_id, usage_obj = _update_chat_sse_metadata(
+                evt, response_id, usage_obj,
             )
-
-        message: Dict[str, Any] = {"role": "assistant", "content": full_text if full_text else None}
-        if annotations:
-            message["annotations"] = annotations
-        if tool_calls:
-            message["tool_calls"] = tool_calls
-        if not _is_strict_json_text_format(text_format):
-            message = apply_reasoning_to_message(
-                message,
+            (
+                full_text,
                 reasoning_summary_text,
                 reasoning_full_text,
-                settings.reasoning_compat,
+                event_error,
+                should_break,
+            ) = _handle_chat_sse_event(
+                evt,
+                full_text,
+                reasoning_summary_text,
+                reasoning_full_text,
+                tool_calls,
+                annotations,
             )
-        
-        completion = {
-            "id": response_id or "chatcmpl",
-            "object": "chat.completion",
-            "created": created,
-            "model": requested_model or model,
-            "choices": [
-                {
-                    "index": 0,
-                    "message": message,
-                    "finish_reason": "stop",
-                }
-            ],
-            **({"usage": usage_obj} if usage_obj else {}),
-        }
-        
-        if settings.verbose:
-            log_json("OUT chat completion", completion, logger=print)
-        
-        return completion, False
+            if event_error:
+                error_message = event_error
+            if should_break:
+                break
+    finally:
+        await upstream.aclose()
+
+    return (
+        full_text,
+        reasoning_summary_text,
+        reasoning_full_text,
+        response_id,
+        tool_calls,
+        error_message,
+        usage_obj,
+        annotations,
+    )
+
+
+async def _adapt_non_streaming_response(
+    ctx: ChatCompletionContext,
+    upstream: httpx.Response,
+    created: int,
+) -> tuple[Any, bool]:
+    (
+        full_text,
+        reasoning_summary_text,
+        reasoning_full_text,
+        response_id,
+        tool_calls,
+        error_message,
+        usage_obj,
+        annotations,
+    ) = await _collect_chat_sse_events(upstream)
+
+    if error_message:
+        raise ChatCompletionError(
+            error_message,
+            status_code=502,
+            error_data={"error": {"message": error_message}},
+        )
+
+    message: dict[str, Any] = {
+        "role": "assistant",
+        "content": full_text if full_text else None,
+    }
+    if annotations:
+        message["annotations"] = annotations
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+    if not _is_strict_json_text_format(ctx.text_format):
+        message = apply_reasoning_to_message(
+            message,
+            reasoning_summary_text,
+            reasoning_full_text,
+            ctx.settings.reasoning_compat,
+        )
+
+    completion = {
+        "id": response_id or "chatcmpl",
+        "object": "chat.completion",
+        "created": created,
+        "model": ctx.requested_model or ctx.model,
+        "choices": [
+            {
+                "index": 0,
+                "message": message,
+                "finish_reason": "stop",
+            },
+        ],
+        **({"usage": usage_obj} if usage_obj else {}),
+    }
+
+    if ctx.settings.verbose:
+        log_json("OUT chat completion", completion, logger=logger.debug)
+
+    return completion, False
+
+
+async def process_chat_completion(
+    payload: dict[str, Any],
+    settings: Settings,
+    http_client: httpx.AsyncClient,
+    *,
+    client_session_id: str | None = None,
+    is_stream: bool | None = None,
+) -> tuple[Any, bool]:
+    """Process chat completion request."""
+    ctx = ChatCompletionContext(
+        payload=payload,
+        settings=settings,
+        http_client=http_client,
+        client_session_id=client_session_id,
+        is_stream_override=is_stream,
+    )
+
+    _extract_and_normalize(ctx)
+    _derive_policies(ctx)
+    _build_upstream_request(ctx)
+    await _authenticate(ctx)
+    upstream = await _send_upstream(ctx)
+
+    created = int(time.time())
+    if ctx.is_stream:
+        return _adapt_streaming_response(ctx, upstream, created)
+    return await _adapt_non_streaming_response(ctx, upstream, created)
 
 
 async def process_text_completion(
-    payload: Dict[str, Any],
+    payload: dict[str, Any],
     settings: Settings,
     http_client: httpx.AsyncClient,
     *,
     client_session_id: str | None = None,
 ) -> tuple[Any, bool]:
-    """
-    Process text completion request (/v1/completions).
-    
+    """Process text completion request (/v1/completions).
+
     Args:
         payload: Request payload
         settings: Application settings
         http_client: Async HTTP client
         client_session_id: Optional session ID from request headers
-    
+
     Returns:
         Tuple of (response_generator_or_dict, is_streaming)
-    
+
     Raises:
         ChatCompletionError: On processing errors
     """
     # 1. Extract request parameters
     requested_model = payload.get("model")
     prompt = payload.get("prompt")
-    
+
     if isinstance(prompt, list):
         prompt = "".join([p if isinstance(p, str) else "" for p in prompt])
     if not isinstance(prompt, str):
         prompt = payload.get("suffix") or ""
-    
+
     stream_req = bool(payload.get("stream", False))
-    stream_options = payload.get("stream_options") if isinstance(payload.get("stream_options"), dict) else {}
+    stream_options = (
+        payload.get("stream_options")
+        if isinstance(payload.get("stream_options"), dict)
+        else {}
+    )
     include_usage = bool(stream_options.get("include_usage", False))
 
     # 2. Normalize model
@@ -571,7 +823,11 @@ async def process_text_completion(
 
     # 4. Build reasoning parameters
     model_reasoning = extract_reasoning_from_model_name(requested_model)
-    reasoning_overrides = payload.get("reasoning") if isinstance(payload.get("reasoning"), dict) else model_reasoning
+    reasoning_overrides = (
+        payload.get("reasoning")
+        if isinstance(payload.get("reasoning"), dict)
+        else model_reasoning
+    )
     reasoning_param = build_reasoning_param(
         settings.reasoning_effort,
         settings.reasoning_summary,
@@ -592,7 +848,11 @@ async def process_text_completion(
         raise ChatCompletionError(
             "Missing ChatGPT credentials. Run 'python3 gptmock.py login' first.",
             status_code=401,
-            error_data={"error": {"message": "Missing ChatGPT credentials. Run 'python3 gptmock.py login' first."}},
+            error_data={
+                "error": {
+                    "message": "Missing ChatGPT credentials. Run 'python3 gptmock.py login' first.",
+                },
+            },
         )
 
     # 7. Get session ID
@@ -620,20 +880,30 @@ async def process_text_completion(
             await upstream.aread()
             err_body = upstream.json() if upstream.content else {"raw": upstream.text}
         except Exception:
-            err_body = {"raw": getattr(upstream, 'text', 'unknown error')}
+            logger.debug("Failed to read upstream error response", exc_info=True)
+            err_body = {"raw": getattr(upstream, "text", "unknown error")}
         raise ChatCompletionError(
             (err_body.get("error", {}) or {}).get("message", "Upstream error"),
             status_code=upstream.status_code,
-            error_data={"error": {"message": (err_body.get("error", {}) or {}).get("message", "Upstream error")}},
+            error_data={
+                "error": {
+                    "message": (err_body.get("error", {}) or {}).get(
+                        "message", "Upstream error",
+                    ),
+                },
+            },
         )
 
     # 10. Return streaming or non-streaming response
     created = int(time.time())
-    
+
     if stream_req:
         if settings.verbose:
-            print(f"OUT text completion (streaming response, model={requested_model or model})")
-        
+            logger.debug(
+                "OUT text completion (streaming response, model=%s)",
+                requested_model or model,
+            )
+
         stream_iter = sse_translate_text(
             upstream,
             requested_model or model,
@@ -643,54 +913,65 @@ async def process_text_completion(
             include_usage=include_usage,
         )
         return stream_iter, True
-    else:
-        # Collect full response
-        full_text = ""
-        response_id = "cmpl"
-        usage_obj: Dict[str, int] | None = None
-        
-        try:
-            async for raw_line in upstream.aiter_lines():
-                if not raw_line:
-                    continue
-                line = raw_line if isinstance(raw_line, str) else raw_line.decode("utf-8", errors="ignore")
-                if not line.startswith("data: "):
-                    continue
-                data = line[len("data: "):].strip()
-                if not data or data == "[DONE]":
-                    if data == "[DONE]":
-                        break
-                    continue
-                try:
-                    evt = json.loads(data)
-                except Exception:
-                    continue
-                
-                if isinstance(evt.get("response"), dict) and isinstance(evt["response"].get("id"), str):
-                    response_id = evt["response"].get("id") or response_id
-                mu = _extract_usage(evt)
-                if mu:
-                    usage_obj = mu
-                kind = evt.get("type")
-                if kind == "response.output_text.delta":
-                    full_text += evt.get("delta") or ""
-                elif kind == "response.completed":
-                    break
-        finally:
-            await upstream.aclose()
+    # Collect full response
+    full_text = ""
+    response_id = "cmpl"
+    usage_obj: dict[str, int] | None = None
 
-        completion = {
-            "id": response_id or "cmpl",
-            "object": "text_completion",
-            "created": created,
-            "model": requested_model or model,
-            "choices": [
-                {"index": 0, "text": full_text, "finish_reason": "stop", "logprobs": None}
-            ],
-            **({"usage": usage_obj} if usage_obj else {}),
-        }
-        
-        if settings.verbose:
-            log_json("OUT text completion", completion, logger=print)
-        
-        return completion, False
+    try:
+        async for raw_line in upstream.aiter_lines():
+            if not raw_line:
+                continue
+            line = (
+                raw_line
+                if isinstance(raw_line, str)
+                else raw_line.decode("utf-8", errors="ignore")
+            )
+            if not line.startswith("data: "):
+                continue
+            data = line[len("data: ") :].strip()
+            if not data or data == "[DONE]":
+                if data == "[DONE]":
+                    break
+                continue
+            try:
+                evt = json.loads(data)
+            except Exception:
+                logger.debug("Failed to parse SSE event JSON", exc_info=True)
+                continue
+
+            if isinstance(evt.get("response"), dict) and isinstance(
+                evt["response"].get("id"), str,
+            ):
+                response_id = evt["response"].get("id") or response_id
+            mu = extract_usage(evt)
+            if mu:
+                usage_obj = mu
+            kind = evt.get("type")
+            if kind == SSE_OUTPUT_TEXT_DELTA:
+                full_text += evt.get("delta") or ""
+            elif kind == SSE_RESPONSE_COMPLETED:
+                break
+    finally:
+        await upstream.aclose()
+
+    completion = {
+        "id": response_id or "cmpl",
+        "object": "text_completion",
+        "created": created,
+        "model": requested_model or model,
+        "choices": [
+            {
+                "index": 0,
+                "text": full_text,
+                "finish_reason": "stop",
+                "logprobs": None,
+            },
+        ],
+        **({"usage": usage_obj} if usage_obj else {}),
+    }
+
+    if settings.verbose:
+        log_json("OUT text completion", completion, logger=logger.debug)
+
+    return completion, False

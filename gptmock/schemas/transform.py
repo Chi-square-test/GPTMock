@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List
+from typing import Any
 
 
 def to_data_url(image_str: str) -> str:
@@ -23,60 +23,113 @@ def to_data_url(image_str: str) -> str:
     return f"data:{kind};base64,{b64}"
 
 
+def _build_content_parts(content: Any, images: list[Any]) -> list[dict[str, Any]]:
+    parts: list[dict[str, Any]] = []
+    if isinstance(content, list):
+        for p in content:
+            if (
+                isinstance(p, dict)
+                and p.get("type") == "text"
+                and isinstance(p.get("text"), str)
+            ):
+                parts.append({"type": "text", "text": p.get("text")})
+    elif isinstance(content, str):
+        parts.append({"type": "text", "text": content})
+    for img in images:
+        url = to_data_url(img)
+        if isinstance(url, str) and url:
+            parts.append({"type": "image_url", "image_url": {"url": url}})
+    return parts
+
+
+def _build_ollama_tool_calls(
+    message: dict[str, Any], pending_call_ids: list[str], call_counter: int,
+) -> tuple[list[dict[str, Any]], int]:
+    tcs: list[dict[str, Any]] = []
+    tool_calls = message.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return tcs, call_counter
+    for tc in tool_calls:
+        if not isinstance(tc, dict):
+            continue
+        fn_raw = tc.get("function")
+        fn: dict[str, Any] = fn_raw if isinstance(fn_raw, dict) else {}
+        fn_name = fn.get("name")
+        name = fn_name if isinstance(fn_name, str) else None
+        args = fn.get("arguments")
+        if name is None:
+            continue
+        call_id_raw = tc.get("id") or tc.get("call_id")
+        if isinstance(call_id_raw, str) and call_id_raw:
+            call_id = call_id_raw
+        else:
+            call_counter += 1
+            call_id = f"ollama_call_{call_counter}"
+        pending_call_ids.append(call_id)
+        tcs.append(
+            {
+                "id": call_id,
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "arguments": (
+                        args
+                        if isinstance(args, str)
+                        else (json.dumps(args) if isinstance(args, dict) else "{}")
+                    ),
+                },
+            },
+        )
+    return tcs, call_counter
+
+
+def _attach_top_images(out: list[dict[str, Any]], top_images: list[str] | None) -> None:
+    if not isinstance(top_images, list) or not top_images:
+        return
+    attach_to: dict[str, Any] | None = None
+    for i in range(len(out) - 1, -1, -1):
+        if out[i].get("role") == "user":
+            attach_to = out[i]
+            break
+    if attach_to is None:
+        attach_to = {"role": "user", "content": []}
+        out.append(attach_to)
+    content_parts = attach_to.get("content")
+    if not isinstance(content_parts, list):
+        content_parts = []
+        attach_to["content"] = content_parts
+    for img in top_images:
+        url = to_data_url(img)
+        if isinstance(url, str) and url:
+            content_parts.append({"type": "image_url", "image_url": {"url": url}})
+
+
 def convert_ollama_messages(
-    messages: List[Dict[str, Any]] | None, top_images: List[str] | None
-) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
+    messages: list[dict[str, Any]] | None, top_images: list[str] | None,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
     msgs = messages if isinstance(messages, list) else []
-    pending_call_ids: List[str] = []
+    pending_call_ids: list[str] = []
     call_counter = 0
     for m in msgs:
         if not isinstance(m, dict):
             continue
         role = m.get("role") or "user"
-        nm: Dict[str, Any] = {"role": role}
+        nm: dict[str, Any] = {"role": role}
 
         content = m.get("content")
-        images = m.get("images") if isinstance(m.get("images"), list) else []
-        parts: List[Dict[str, Any]] = []
-        if isinstance(content, list):
-            for p in content:
-                if isinstance(p, dict) and p.get("type") == "text" and isinstance(p.get("text"), str):
-                    parts.append({"type": "text", "text": p.get("text")})
-        elif isinstance(content, str):
-            parts.append({"type": "text", "text": content})
-        for img in images:
-            url = to_data_url(img)
-            if isinstance(url, str) and url:
-                parts.append({"type": "image_url", "image_url": {"url": url}})
+        images_raw = m.get("images")
+        images: list[Any] = []
+        if isinstance(images_raw, list):
+            images = images_raw
+        parts = _build_content_parts(content, images)
         if parts:
             nm["content"] = parts
 
         if role == "assistant" and isinstance(m.get("tool_calls"), list):
-            tcs = []
-            for tc in m.get("tool_calls"):
-                if not isinstance(tc, dict):
-                    continue
-                fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
-                name = fn.get("name") if isinstance(fn.get("name"), str) else None
-                args = fn.get("arguments")
-                if name is None:
-                    continue
-                call_id = tc.get("id") or tc.get("call_id")
-                if not isinstance(call_id, str) or not call_id:
-                    call_counter += 1
-                    call_id = f"ollama_call_{call_counter}"
-                pending_call_ids.append(call_id)
-                tcs.append(
-                    {
-                        "id": call_id,
-                        "type": "function",
-                        "function": {
-                            "name": name,
-                            "arguments": args if isinstance(args, str) else (json.dumps(args) if isinstance(args, dict) else "{}"),
-                        },
-                    }
-                )
+            tcs, call_counter = _build_ollama_tool_calls(
+                m, pending_call_ids, call_counter,
+            )
             if tcs:
                 nm["tool_calls"] = tcs
 
@@ -93,56 +146,52 @@ def convert_ollama_messages(
 
         out.append(nm)
 
-    if isinstance(top_images, list) and top_images:
-        attach_to = None
-        for i in range(len(out) - 1, -1, -1):
-            if out[i].get("role") == "user":
-                attach_to = out[i]
-                break
-        if attach_to is None:
-            attach_to = {"role": "user", "content": []}
-            out.append(attach_to)
-        attach_to.setdefault("content", [])
-        for img in top_images:
-            url = to_data_url(img)
-            if isinstance(url, str) and url:
-                attach_to["content"].append({"type": "image_url", "image_url": {"url": url}})
+    _attach_top_images(out, top_images)
     return out
 
 
-def normalize_ollama_tools(tools: List[Dict[str, Any]] | None) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
+def _normalize_single_ollama_tool(t: dict[str, Any]) -> dict[str, Any] | None:
+    fn_raw = t.get("function")
+    if isinstance(fn_raw, dict):
+        fn: dict[str, Any] = fn_raw
+        fn_name = fn.get("name")
+        name = fn_name if isinstance(fn_name, str) else None
+        if not name:
+            return None
+        parameters = fn.get("parameters")
+        return {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": fn.get("description") or "",
+                "parameters": (
+                    parameters
+                    if isinstance(parameters, dict)
+                    else {"type": "object", "properties": {}}
+                ),
+            },
+        }
+    name = t.get("name") if isinstance(t.get("name"), str) else None
+    if name:
+        return {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": t.get("description") or "",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    return None
+
+
+def normalize_ollama_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
     if not isinstance(tools, list):
         return out
     for t in tools:
         if not isinstance(t, dict):
             continue
-        if isinstance(t.get("function"), dict):
-            fn = t.get("function")
-            name = fn.get("name") if isinstance(fn.get("name"), str) else None
-            if not name:
-                continue
-            out.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "description": fn.get("description") or "",
-                        "parameters": fn.get("parameters") if isinstance(fn.get("parameters"), dict) else {"type": "object", "properties": {}},
-                    },
-                }
-            )
-            continue
-        name = t.get("name") if isinstance(t.get("name"), str) else None
-        if name:
-            out.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "description": t.get("description") or "",
-                        "parameters": {"type": "object", "properties": {}},
-                    },
-                }
-            )
+        normalized = _normalize_single_ollama_tool(t)
+        if normalized is not None:
+            out.append(normalized)
     return out

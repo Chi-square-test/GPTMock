@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Set
+from typing import Any
+
+DEFAULT_REASONING_EFFORTS: set[str] = {"minimal", "low", "medium", "high", "xhigh"}
 
 
-DEFAULT_REASONING_EFFORTS: Set[str] = {"minimal", "low", "medium", "high", "xhigh"}
-
-
-def allowed_efforts_for_model(model: str | None) -> Set[str]:
+def allowed_efforts_for_model(model: str | None) -> set[str]:
     base = (model or "").strip().lower()
     if not base:
         return DEFAULT_REASONING_EFFORTS
@@ -27,10 +26,10 @@ def allowed_efforts_for_model(model: str | None) -> Set[str]:
 def build_reasoning_param(
     base_effort: str = "medium",
     base_summary: str = "auto",
-    overrides: Dict[str, Any] | None = None,
+    overrides: dict[str, Any] | None = None,
     *,
-    allowed_efforts: Set[str] | None = None,
-) -> Dict[str, Any]:
+    allowed_efforts: set[str] | None = None,
+) -> dict[str, Any]:
     effort = (base_effort or "").strip().lower()
     summary = (base_summary or "").strip().lower()
 
@@ -49,18 +48,18 @@ def build_reasoning_param(
     if summary not in valid_summaries:
         summary = "auto"
 
-    reasoning: Dict[str, Any] = {"effort": effort}
+    reasoning: dict[str, Any] = {"effort": effort}
     if summary != "none":
         reasoning["summary"] = summary
     return reasoning
 
 
 def apply_reasoning_to_message(
-    message: Dict[str, Any],
+    message: dict[str, Any],
     reasoning_summary_text: str,
     reasoning_full_text: str,
     compat: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     try:
         compat = (compat or "think-tags").strip().lower()
     except Exception:
@@ -98,7 +97,7 @@ def apply_reasoning_to_message(
     return message
 
 
-def extract_reasoning_from_model_name(model: str | None) -> Dict[str, Any] | None:
+def extract_reasoning_from_model_name(model: str | None) -> dict[str, Any] | None:
     """Infer reasoning overrides from a model."""
     if not isinstance(model, str) or not model:
         return None

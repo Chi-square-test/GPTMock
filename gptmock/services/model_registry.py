@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List
-
+from typing import Any
 
 OLLAMA_FAKE_EVAL = {
     "total_duration": 8497226791,
@@ -56,7 +55,7 @@ def normalize_model_name(name: str | None, debug_model: str | None = None) -> st
 
 
 def get_instructions_for_model(
-    model: str, base_instructions: str, gpt5_codex_instructions: str | None
+    model: str, base_instructions: str, gpt5_codex_instructions: str | None,
 ) -> str:
     """Return system instructions for a given model."""
     if (
@@ -72,7 +71,7 @@ def get_instructions_for_model(
 
 def get_model_list(
     expose_reasoning: bool = False,
-) -> List[str]:
+) -> list[str]:
     """Return unified model list for both OpenAI and Ollama formats."""
     model_groups = [
         ("gpt-5", ["high", "medium", "low", "minimal"]),
@@ -87,7 +86,7 @@ def get_model_list(
         ("gpt-5.4", ["xhigh", "high", "medium", "low"]),
     ]
 
-    model_ids: List[str] = []
+    model_ids: list[str] = []
     for base, efforts in model_groups:
         model_ids.append(base)
         if expose_reasoning:
@@ -96,13 +95,13 @@ def get_model_list(
     return model_ids
 
 
-def get_openai_models(expose_reasoning: bool = False) -> List[Dict[str, Any]]:
+def get_openai_models(expose_reasoning: bool = False) -> list[dict[str, Any]]:
     """Return OpenAI-formatted model list."""
     model_ids = get_model_list(expose_reasoning)
     return [{"id": mid, "object": "model", "owned_by": "owner"} for mid in model_ids]
 
 
-def get_ollama_models(expose_reasoning: bool = False) -> List[Dict[str, Any]]:
+def get_ollama_models(expose_reasoning: bool = False) -> list[dict[str, Any]]:
     """Return Ollama-formatted model list."""
     model_ids = get_model_list(expose_reasoning)
     models = []
@@ -122,6 +121,6 @@ def get_ollama_models(expose_reasoning: bool = False) -> List[Dict[str, Any]]:
                     "parameter_size": "8.0B",
                     "quantization_level": "Q4_0",
                 },
-            }
+            },
         )
     return models

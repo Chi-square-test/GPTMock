@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import datetime
 import hashlib
@@ -7,12 +8,13 @@ import json
 import os
 import secrets
 import sys
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 import httpx
 
 from gptmock.core.constants import CLIENT_ID_DEFAULT, OAUTH_TOKEN_URL
 from gptmock.core.models import PkceCodes
+from gptmock.core.utils import parse_datetime
 
 
 def eprint(*args, **kwargs) -> None:
@@ -26,7 +28,7 @@ def get_home_dir() -> str:
     return home
 
 
-def read_auth_file() -> Dict[str, Any] | None:
+def read_auth_file() -> dict[str, Any] | None:
     for base in [
         os.getenv("GPTMOCK_HOME"),
         os.getenv("CHATGPT_LOCAL_HOME"),
@@ -39,7 +41,7 @@ def read_auth_file() -> Dict[str, Any] | None:
             continue
         path = os.path.join(base, "auth.json")
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 return json.load(f)
         except FileNotFoundError:
             continue
@@ -48,7 +50,7 @@ def read_auth_file() -> Dict[str, Any] | None:
     return None
 
 
-def write_auth_file(auth: Dict[str, Any]) -> bool:
+def write_auth_file(auth: dict[str, Any]) -> bool:
     home = get_home_dir()
     try:
         os.makedirs(home, exist_ok=True)
@@ -67,7 +69,7 @@ def write_auth_file(auth: Dict[str, Any]) -> bool:
         return False
 
 
-def parse_jwt_claims(token: str) -> Dict[str, Any] | None:
+def parse_jwt_claims(token: str) -> dict[str, Any] | None:
     if not token or token.count(".") != 2:
         return None
     try:
@@ -87,15 +89,15 @@ def generate_pkce() -> PkceCodes:
 
 
 async def load_chatgpt_tokens(ensure_fresh: bool = True) -> tuple[str | None, str | None, str | None]:
-    auth = read_auth_file()
+    auth = await asyncio.to_thread(read_auth_file)
     if not isinstance(auth, dict):
         return None, None, None
 
     tokens = auth.get("tokens") if isinstance(auth.get("tokens"), dict) else {}
-    access_token: Optional[str] = tokens.get("access_token")
-    account_id: Optional[str] = tokens.get("account_id")
-    id_token: Optional[str] = tokens.get("id_token")
-    refresh_token: Optional[str] = tokens.get("refresh_token")
+    access_token: str | None = tokens.get("access_token")
+    account_id: str | None = tokens.get("account_id")
+    id_token: str | None = tokens.get("id_token")
+    refresh_token: str | None = tokens.get("refresh_token")
     last_refresh = auth.get("last_refresh")
 
     if ensure_fresh and isinstance(refresh_token, str) and refresh_token and CLIENT_ID_DEFAULT:
@@ -118,7 +120,7 @@ async def load_chatgpt_tokens(ensure_fresh: bool = True) -> tuple[str | None, st
                 if isinstance(account_id, str) and account_id:
                     updated_tokens["account_id"] = account_id
 
-                persisted = _persist_refreshed_auth(auth, updated_tokens)
+                persisted = await asyncio.to_thread(_persist_refreshed_auth, auth, updated_tokens)
                 if persisted is not None:
                     auth, tokens = persisted
                 else:
@@ -133,29 +135,29 @@ async def load_chatgpt_tokens(ensure_fresh: bool = True) -> tuple[str | None, st
     return access_token, account_id, id_token
 
 
-def _should_refresh_access_token(access_token: Optional[str], last_refresh: Any) -> bool:
+def _should_refresh_access_token(access_token: str | None, last_refresh: Any) -> bool:
     if not isinstance(access_token, str) or not access_token:
         return True
 
     claims = parse_jwt_claims(access_token) or {}
     exp = claims.get("exp") if isinstance(claims, dict) else None
-    now = datetime.datetime.now(datetime.timezone.utc)
+    now = datetime.datetime.now(datetime.UTC)
     if isinstance(exp, (int, float)):
         try:
-            expiry = datetime.datetime.fromtimestamp(float(exp), datetime.timezone.utc)
+            expiry = datetime.datetime.fromtimestamp(float(exp), datetime.UTC)
         except (OverflowError, OSError, ValueError):
             expiry = None
         if expiry is not None:
             return expiry <= now + datetime.timedelta(minutes=5)
 
     if isinstance(last_refresh, str):
-        refreshed_at = _parse_iso8601(last_refresh)
+        refreshed_at = parse_datetime(last_refresh)
         if refreshed_at is not None:
             return refreshed_at <= now - datetime.timedelta(minutes=55)
     return False
 
 
-async def _refresh_chatgpt_tokens(refresh_token: str, client_id: str) -> Optional[Dict[str, Optional[str]]]:
+async def _refresh_chatgpt_tokens(refresh_token: str, client_id: str) -> dict[str, str | None] | None:
     payload = {
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
@@ -197,7 +199,7 @@ async def _refresh_chatgpt_tokens(refresh_token: str, client_id: str) -> Optiona
     }
 
 
-def _persist_refreshed_auth(auth: Dict[str, Any], updated_tokens: Dict[str, Any]) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
+def _persist_refreshed_auth(auth: dict[str, Any], updated_tokens: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]] | None:
     updated_auth = dict(auth)
     updated_auth["tokens"] = updated_tokens
     updated_auth["last_refresh"] = _now_iso8601()
@@ -207,7 +209,7 @@ def _persist_refreshed_auth(auth: Dict[str, Any], updated_tokens: Dict[str, Any]
     return None
 
 
-def _derive_account_id(id_token: Optional[str]) -> Optional[str]:
+def _derive_account_id(id_token: str | None) -> str | None:
     if not isinstance(id_token, str) or not id_token:
         return None
     claims = parse_jwt_claims(id_token) or {}
@@ -219,20 +221,10 @@ def _derive_account_id(id_token: Optional[str]) -> Optional[str]:
     return None
 
 
-def _parse_iso8601(value: str) -> Optional[datetime.datetime]:
-    try:
-        if value.endswith("Z"):
-            value = value[:-1] + "+00:00"
-        dt = datetime.datetime.fromisoformat(value)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=datetime.timezone.utc)
-        return dt.astimezone(datetime.timezone.utc)
-    except Exception:
-        return None
 
 
 def _now_iso8601() -> str:
-    return datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
 
 
 async def get_effective_chatgpt_auth() -> tuple[str | None, str | None]:

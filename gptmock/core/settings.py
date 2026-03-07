@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any
 
-from pydantic import Field, computed_field
+from pydantic import computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -45,6 +44,7 @@ class Settings(BaseSettings):
     default_web_search: bool = False
     host: str = "127.0.0.1"
     port: int = 8000
+    cors_origins: str = "*"
     ollama_version: str = "0.12.10"
 
     @computed_field

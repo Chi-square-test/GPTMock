@@ -5,9 +5,8 @@ from typing import Any
 
 
 def log_json(prefix: str, payload: Any, logger=None) -> None:
-    """
-    Log a payload as JSON with a prefix.
-    
+    """Log a payload as JSON with a prefix.
+
     Args:
         prefix: Label for the log entry
         payload: Data to log (will be JSON-serialized if possible)
@@ -15,7 +14,7 @@ def log_json(prefix: str, payload: Any, logger=None) -> None:
     """
     if logger is None:
         logger = print
-    
+
     try:
         logger(f"{prefix}\n{json.dumps(payload, indent=2, ensure_ascii=False)}")
     except Exception:
