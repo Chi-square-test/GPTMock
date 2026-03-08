@@ -32,6 +32,7 @@ class Settings(BaseSettings):
         env_prefix="GPTMOCK_",
         env_file=".env",
         case_sensitive=False,
+        extra="ignore",
     )
 
     verbose: bool = False
