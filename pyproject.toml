@@ -60,6 +60,9 @@ line-length = 120
 select = ["E", "F", "W", "UP", "I"]
 ignore = ["E501"]
 
+[tool.pytest.ini_options]
+addopts = ["--ignore=tests/tools"]
+
 [tool.coverage.run]
 source = ["gptmock"]
 omit = ["gptmock/cli.py"]
