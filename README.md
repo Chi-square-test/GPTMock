@@ -217,6 +217,7 @@ curl http://127.0.0.1:8000/v1/chat/completions \
 | `gpt-5.3-codex` | `low` / `medium` / `high` / `xhigh` | ✅ Supported |
 | `gpt-5.3-codex-spark` | `low` / `medium` / `high` / `xhigh` | ✅ Supported |
 | `gpt-5.4` | `low` / `medium` / `high` / `xhigh` | ✅ Supported |
+| `gpt-5.4-mini` | `low` / `medium` / `high` / `xhigh` | ✅ Supported |
 
 ### Deprecated / Unsupported Models
 
